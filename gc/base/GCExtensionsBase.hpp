@@ -110,6 +110,12 @@ class HeapRegionStateTable;
 #define LOCALGC_ESTIMATE_FRAGMENTATION 		0x1
 #define GLOBALGC_ESTIMATE_FRAGMENTATION 	0x2
 
+#define EVACUATOR_DEFAULT_STACK_DEPTH			32
+#define EVACUATOR_DEFAULT_INSIDE_OBJECT_SIZE	256
+#define EVACUATOR_DEFAULT_INSIDE_COPY_DISTANCE	4096
+#define EVACUATOR_DEFAULT_WORK_QUANTUM EVACUATOR_DEFAULT_INSIDE_COPY_DISTANCE
+#define EVACUATOR_DEFAULT_WORK_QUANTA 2
+
 enum ExcessiveLevel {
 	excessive_gc_normal = 0,
 	excessive_gc_aggressive,
@@ -456,6 +462,7 @@ public:
 	bool scvTenureStrategyHistory; /**< Flag for enabling the History scavenger tenure strategy. */
 	bool scavengerEnabled;
 	bool scavengerRsoScanUnsafe;
+	bool evacuatorEnabled;
 	uintptr_t cacheListSplit; /**< the number of ways to split scanCache lists, set by -XXgc:cacheListLockSplit=, or determined heuristically based on the number of GC threads */
 #if defined(OMR_GC_CONCURRENT_SCAVENGER)
 	bool softwareRangeCheckReadBarrier; /**< enable software read barrier instead of hardware guarded loads when running with CS */
@@ -468,6 +475,13 @@ public:
 	float concurrentScavengerAllocDeviationBoost; /**< boost factor for allocate rate and its deviation, used for tilt calcuation in Concurrent Scavenger */
 	bool concurrentScavengeExhaustiveTermination; /**< control flag to enable/disable concurrent phase termination optimization using involing async mutator callbacks */
 #endif	/* OMR_GC_CONCURRENT_SCAVENGER */
+	uintptr_t evacuatorMaximumStackDepth; /**< The number of scan stack frames to allocate */
+	uintptr_t evacuatorMaximumInsideCopySize; /**< The size in bytes of the largest object that can be copied inside an evacuator scan stack frame */
+	uintptr_t evacuatorMaximumInsideCopyDistance; /**< Referent object wills be pushed up the stack if inside scan-copy distance if greater than this value */
+	uintptr_t evacuatorWorkQuantumSize; /**< Determines minimum evacuator wok packet volume */
+	uintptr_t evacuatorWorkQuanta; /**< Determines minimum evacuator volume of work after stall condition cleared */
+	uintptr_t evacuatorScanOptions; /**< Determines evacuator scanning modality */
+	uintptr_t evacuatorTraceOptions; /**< Determines evacuator tracing output options */
 	uintptr_t scavengerFailedTenureThreshold;
 	uintptr_t maxScavengeBeforeGlobal;
 	uintptr_t scvArraySplitMaximumAmount; /**< maximum number of elements to split array scanning work in the scavenger */
@@ -929,6 +943,16 @@ public:
 	{
 #if defined(OMR_GC_MODRON_SCAVENGER)
 		return scavengerEnabled;
+#else
+		return false;
+#endif /* defined(OMR_GC_MODRON_SCAVENGER) */
+	}
+
+	MMINLINE bool
+	isEvacuatorEnabled()
+	{
+#if defined(OMR_GC_MODRON_SCAVENGER)
+		return evacuatorEnabled && isScavengerEnabled() && !isConcurrentScavengerEnabled();
 #else
 		return false;
 #endif /* defined(OMR_GC_MODRON_SCAVENGER) */
@@ -1515,6 +1539,7 @@ public:
 		, scvTenureStrategyHistory(true)
 		, scavengerEnabled(false)
 		, scavengerRsoScanUnsafe(false)
+		, evacuatorEnabled(false)
 		, cacheListSplit(0)
 #if defined(OMR_GC_CONCURRENT_SCAVENGER)
 		, softwareRangeCheckReadBarrier(false)
@@ -1527,6 +1552,13 @@ public:
 		, concurrentScavengerAllocDeviationBoost(2.0)
 		, concurrentScavengeExhaustiveTermination(false)
 #endif /* defined(OMR_GC_CONCURRENT_SCAVENGER) */
+		, evacuatorMaximumStackDepth(EVACUATOR_DEFAULT_STACK_DEPTH)
+		, evacuatorMaximumInsideCopySize(EVACUATOR_DEFAULT_INSIDE_OBJECT_SIZE)
+		, evacuatorMaximumInsideCopyDistance(EVACUATOR_DEFAULT_INSIDE_COPY_DISTANCE)
+		, evacuatorWorkQuantumSize(EVACUATOR_DEFAULT_WORK_QUANTUM)
+		, evacuatorWorkQuanta(EVACUATOR_DEFAULT_WORK_QUANTA)
+		, evacuatorScanOptions(0)
+		, evacuatorTraceOptions(0)
 		, scavengerFailedTenureThreshold(0)
 		, maxScavengeBeforeGlobal(0)
 		, scvArraySplitMaximumAmount(DEFAULT_ARRAY_SPLIT_MAXIMUM_SIZE)

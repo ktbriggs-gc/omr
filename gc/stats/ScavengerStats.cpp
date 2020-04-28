@@ -89,6 +89,7 @@ MM_ScavengerStats::MM_ScavengerStats()
 	,_tenureExpandedTime(0)
 	,_leafObjectCount(0)
 	,_copy_cachesize_sum(0)
+	,_work_packetsize_sum(0)
 	,_slotsCopied(0)
 	,_slotsScanned(0)
 #if defined(OMR_GC_CONCURRENT_SCAVENGER)
@@ -100,6 +101,9 @@ MM_ScavengerStats::MM_ScavengerStats()
 	memset(_flipHistory, 0, sizeof(_flipHistory));
 	memset(_copy_distance_counts, 0, sizeof(_copy_distance_counts));
 	memset(_copy_cachesize_counts, 0, sizeof(_copy_cachesize_counts));
+	memset(_work_packetsize_counts, 0, sizeof(_work_packetsize_counts));
+	memset(_small_object_counts, 0, sizeof(_small_object_counts));
+	memset(_large_object_counts, 0, sizeof(_large_object_counts));
 }
 
 struct MM_ScavengerStats::FlipHistory*
@@ -141,6 +145,9 @@ MM_ScavengerStats::clear(bool firstIncrement)
 	_backout = 0;
 	_flipCount = 0;
 	_flipBytes = 0;
+#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+	_hashBytes = 0;
+#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 	_tenureAggregateCount = 0;
 	_tenureAggregateBytes = 0;
 #if defined(OMR_GC_LARGE_OBJECT_AREA)	
@@ -200,8 +207,15 @@ MM_ScavengerStats::clear(bool firstIncrement)
 
 	_leafObjectCount = 0;
 	_copy_cachesize_sum = 0;
+	_work_packetsize_sum = 0;
 	memset(_copy_distance_counts, 0, sizeof(_copy_distance_counts));
 	memset(_copy_cachesize_counts, 0, sizeof(_copy_cachesize_counts));
+	memset(_work_packetsize_counts, 0, sizeof(_work_packetsize_counts));
+	memset(_small_object_counts, 0, sizeof(_small_object_counts));
+	memset(_large_object_counts, 0, sizeof(_large_object_counts));
+#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+	memset(_cycleVolumeMetrics, 0, sizeof(_cycleVolumeMetrics));
+#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 }
 
 bool

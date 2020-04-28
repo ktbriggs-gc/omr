@@ -45,6 +45,10 @@ if(OMR_GC_MODRON_SCAVENGER)
 		INTERFACE
 			${CMAKE_CURRENT_SOURCE_DIR}/ScavengerDelegate.cpp
 	)
+	target_sources(omr_example_gc_glue
+		INTERFACE
+			${CMAKE_CURRENT_SOURCE_DIR}/EvacuatorDelegate.cpp
+	)
 endif(OMR_GC_MODRON_SCAVENGER)
 
 target_link_libraries(omr_example_gc_glue

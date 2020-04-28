@@ -63,6 +63,10 @@ public:
 	uintptr_t _backout;
 	uintptr_t _flipCount;
 	uintptr_t _flipBytes;
+/* #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+	uintptr_t _hashBytes;
+	uintptr_t _cycleVolumeMetrics[3];
+/* #endif defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 	uintptr_t _tenureAggregateCount;
 	uintptr_t _tenureAggregateBytes;
 #if defined(OMR_GC_LARGE_OBJECT_AREA)	
@@ -135,7 +139,11 @@ public:
 	uint64_t _leafObjectCount;
 	uint64_t _copy_distance_counts[OMR_SCAVENGER_DISTANCE_BINS];
 	uint64_t _copy_cachesize_counts[OMR_SCAVENGER_CACHESIZE_BINS];
+	uint64_t _work_packetsize_counts[OMR_SCAVENGER_DISTANCE_BINS];
+	uint64_t _small_object_counts[OMR_SCAVENGER_DISTANCE_BINS+1];
+	uint64_t _large_object_counts[OMR_SCAVENGER_DISTANCE_BINS+1];
 	uint64_t _copy_cachesize_sum;
+	uint64_t _work_packetsize_sum;
 
 	uint64_t _slotsCopied; /**< The number of slots copied by the thread since _slotsScanned was last sampled and reset */
 	uint64_t _slotsScanned; /**< The number of slots scanned by the thread since _slotsCopied was last sampled and reset */
@@ -202,17 +210,12 @@ public:
 	MMINLINE void
 	countCopyDistance(uintptr_t fromAddr, uintptr_t toAddr)
 	{
-		if (0 != fromAddr && 0 != toAddr) {
-			uintptr_t delta = fromAddr ^ toAddr;
-			uintptr_t bin = MM_Math::floorLog2(delta);
-			if (delta > ((uintptr_t)1 << bin)) {
-				bin += 1;
-			}
-			if (OMR_SCAVENGER_DISTANCE_BINS <= bin) {
-				bin = OMR_SCAVENGER_DISTANCE_BINS - 1;
-			}
-			_copy_distance_counts[bin] += 1;
+		uintptr_t delta = fromAddr ^ toAddr;
+		uintptr_t bin = MM_Math::floorLog2(delta);
+		if (OMR_SCAVENGER_DISTANCE_BINS <= bin) {
+			bin = OMR_SCAVENGER_DISTANCE_BINS - 1;
 		}
+		_copy_distance_counts[bin] += 1;
 	}
 
 	MMINLINE void
@@ -225,6 +228,33 @@ public:
 		}
 		_copy_cachesize_counts[binSlot] += 1;
 		_copy_cachesize_sum += copyCacheSize;
+	}
+
+	MMINLINE void
+	countWorkPacketSize(uint64_t workPacketSize, uint64_t copyCacheSizeMax)
+	{
+		uint64_t binSize = copyCacheSizeMax / OMR_SCAVENGER_DISTANCE_BINS;
+		uint64_t binSlot = workPacketSize / binSize;
+		if (OMR_SCAVENGER_DISTANCE_BINS <= binSlot) {
+			binSlot = OMR_SCAVENGER_DISTANCE_BINS - 1;
+		}
+		_work_packetsize_counts[binSlot] += 1;
+		_work_packetsize_sum += workPacketSize;
+	}
+
+	MMINLINE void
+	countObjectSize(uintptr_t objectSize, uintptr_t maxInsideCopySize)
+	{
+		if (256 >= objectSize) {
+			_small_object_counts[(OMR_MAX(8, objectSize) >> 3) - 1] += 1;
+		} else {
+			_large_object_counts[MM_Math::floorLog2(OMR_MIN(((uintptr_t)(1 << 31)), objectSize)) - 8] += 1;
+		}
+		if (maxInsideCopySize >= objectSize) {
+			_small_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += objectSize;
+		} else {
+			_large_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += objectSize;
+		}
 	}
 
 	void clear(bool firstIncrement);
