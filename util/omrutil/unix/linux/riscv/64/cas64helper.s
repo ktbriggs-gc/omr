@@ -1,5 +1,5 @@
 ###############################################################################
-# Copyright (c) 2018, 2020 IBM Corp. and others
+# Copyright (c) 2019, 2019 IBM Corp. and others
 #
 # This program and the accompanying materials are made available under
 # the terms of the Eclipse Public License 2.0 which accompanies this
@@ -20,44 +20,35 @@
 # SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-exception-2.0 OR LicenseRef-GPL-2.0 WITH Assembly-exception
 ###############################################################################
 
-# Global project leads/owners
-* @charliegracie @mstoodle
+	.file	"cas64helper.s"
+	.option nopic
+	.text
 
-# Build / Configure and CI
-*.mk @charliegracie
-*.yml @charliegracie
-
-# CMake
-*.cmake @youngar @charliegracie @rwy0717
-/cmake/ @youngar @charliegracie @rwy0717
-**/CMakeLists.txt @youngar @charliegracie @rwy0717
-
-# GC
-/gc/ @charliegracie @youngar @rwy0717
-/glue/ @charliegracie @youngar @rwy0717
-
-# Compiler
-/compiler/ @0xdaryl @mstoodle
-/compiler/optimizer/ @vijaysun-omr @andrewcraik
-/compiler/il/ @vijaysun-omr @Leonardo2718
-/compiler/arm/ @0xdaryl @knn-k
-/compiler/aarch64/ @0xdaryl @knn-k
-/compiler/z/ @fjeremic
-
-# JitBuilder
-/jitbuilder/ @mstoodle @charliegracie @Leonardo2718
-/compiler/ilgen @mstoodle @Leonardo2718
-
-# Port Library
-/port/ @charliegracie @youngar @rwy0717
-
-# Thread Library
-/thread/ @charliegracie @youngar @rwy0717
-
-# OMR Core Utilities
-/include_core/OMR/ @youngar @charliegracie @Leonardo2718 @rwy0717
-
-# Tril and Testing
-/fvtest/tril/ @Leonardo2718 @fjeremic @0xdaryl
-/fvtest/compilertriltest/ @Leonardo2718 @fjeremic @0xdaryl
-/fvtest/jitbuildertest/ @mstoodle @charliegracie @Leonardo2718
+# Prototype: uint64_t RiscvCAS64Helper(volatile uint64_t *addr, uint64_t compareValue, uint64_t swapValue);
+# Defined in: #Args: 3
+	.align	2
+	.globl	RiscvCAS64Helper
+	.type	RiscvCAS64Helper, @function
+RiscvCAS64Helper:
+	addi	sp,sp,-48
+	sd	s0,40(sp)
+	addi	s0,sp,48
+	sd	a0,-24(s0)
+	sd	a1,-32(s0)
+	sd	a2,-40(s0)
+	ld	a5,-24(s0)
+	ld	a4,-32(s0)
+	ld	a3,-40(s0)
+	fence iorw,ow
+retry:
+	lr.d.aq a2,0(a5)
+	bne a2,a4,fail
+	sc.d.aqrl a1,a3,0(a5)
+	bnez a1,retry
+fail:
+	mv	a5,a2
+	mv	a0,a5
+	ld	s0,40(sp)
+	addi	sp,sp,48
+	jr	ra
+	.size	RiscvCAS64Helper, .-RiscvCAS64Helper
