@@ -145,9 +145,7 @@ MM_ScavengerStats::clear(bool firstIncrement)
 	_backout = 0;
 	_flipCount = 0;
 	_flipBytes = 0;
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 	_hashBytes = 0;
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 	_tenureAggregateCount = 0;
 	_tenureAggregateBytes = 0;
 #if defined(OMR_GC_LARGE_OBJECT_AREA)	
@@ -213,9 +211,7 @@ MM_ScavengerStats::clear(bool firstIncrement)
 	memset(_work_packetsize_counts, 0, sizeof(_work_packetsize_counts));
 	memset(_small_object_counts, 0, sizeof(_small_object_counts));
 	memset(_large_object_counts, 0, sizeof(_large_object_counts));
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 	memset(_cycleVolumeMetrics, 0, sizeof(_cycleVolumeMetrics));
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 }
 
 bool

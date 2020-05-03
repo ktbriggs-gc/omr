@@ -63,10 +63,8 @@ public:
 	uintptr_t _backout;
 	uintptr_t _flipCount;
 	uintptr_t _flipBytes;
-/* #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 	uintptr_t _hashBytes;
 	uintptr_t _cycleVolumeMetrics[3];
-/* #endif defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 	uintptr_t _tenureAggregateCount;
 	uintptr_t _tenureAggregateBytes;
 #if defined(OMR_GC_LARGE_OBJECT_AREA)	
@@ -245,15 +243,16 @@ public:
 	MMINLINE void
 	countObjectSize(uintptr_t objectSize, uintptr_t maxInsideCopySize)
 	{
-		if (256 >= objectSize) {
-			_small_object_counts[(OMR_MAX(8, objectSize) >> 3) - 1] += 1;
+		uintptr_t bin = MM_Math::floorLog2(objectSize);
+		uintptr_t max = MM_Math::floorLog2(maxInsideCopySize);
+		if (bin < max) {
+			bin = objectSize / OMR_SCAVENGER_DISTANCE_BINS;
+			_small_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += 1;
+			_small_object_counts[bin] += 1;
 		} else {
-			_large_object_counts[MM_Math::floorLog2(OMR_MIN(((uintptr_t)(1 << 31)), objectSize)) - 8] += 1;
-		}
-		if (maxInsideCopySize >= objectSize) {
-			_small_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += objectSize;
-		} else {
-			_large_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += objectSize;
+			bin = (bin < OMR_SCAVENGER_DISTANCE_BINS) ? bin : (OMR_SCAVENGER_DISTANCE_BINS - 1);
+			_large_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += 1;
+			_large_object_counts[bin] += 1;
 		}
 	}
 

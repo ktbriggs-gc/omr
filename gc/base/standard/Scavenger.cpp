@@ -741,12 +741,10 @@ MM_Scavenger::mergeGCStatsBase(MM_EnvironmentBase *env, MM_ScavengerStats *final
 #endif /* OMR_GC_LARGE_OBJECT_AREA */
 	finalGCStats->_flipCount += scavStats->_flipCount;
 	finalGCStats->_flipBytes += scavStats->_flipBytes;
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 	finalGCStats->_hashBytes += scavStats->_hashBytes;
 	for (uintptr_t i = 0; i < 3; i += 1) {
 		finalGCStats->_cycleVolumeMetrics[i] += scavStats->_cycleVolumeMetrics[i];
 	}
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 	finalGCStats->_failedTenureCount += scavStats->_failedTenureCount;
 	finalGCStats->_failedTenureBytes += scavStats->_failedTenureBytes;
 	finalGCStats->_failedTenureLargest = OMR_MAX(scavStats->_failedTenureLargest,
@@ -1729,9 +1727,7 @@ MM_Scavenger::copy(MM_EnvironmentStandard *env, MM_ForwardedHeader* forwardedHea
 			Assert_MM_true(copyCache->flags & OMR_SCAVENGER_CACHE_TYPE_SEMISPACE);
 			scavStats->_flipCount += 1;
 			scavStats->_flipBytes += objectCopySizeInBytes;
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 			scavStats->_hashBytes += (objectReserveSizeInBytes - objectCopySizeInBytes);
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 			scavStats->getFlipHistory(0)->_flipBytes[oldObjectAge + 1] += objectReserveSizeInBytes;
 		}
 	} else {
@@ -4176,8 +4172,8 @@ MM_Scavenger::masterThreadGarbageCollect(MM_EnvironmentBase *envBase, MM_Allocat
 		_extensions->scavengerStats._endTime = omrtime_hires_clock();
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-		Assert_MM_true(!_extensions->isEvacuatorEnabled() || (isAborting() == !scavengeCompletedSuccessfully(env)));
 		reportCollectionStats(env);
+		Assert_MM_true(!_extensions->isEvacuatorEnabled() || (isAborting() == !scavengeCompletedSuccessfully(env)));
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
 		if(scavengeCompletedSuccessfully(env)) {

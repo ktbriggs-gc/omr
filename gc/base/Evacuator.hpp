@@ -60,29 +60,7 @@ public:
 	} Region;
 
 private:
-	/* Enumeration of conditions that relate to evacuator operation */
-	typedef enum ConditionFlag {
-		breadth_first_always = 1	/* forcing outside copy for all objects all the time */
-		, breadth_first_roots = 2	/* forcing outside copy for root objects */
-		, scanning_heap = 4			/* this is raised while evacuator is in collective heap scan */
-		, stall = 8					/* forcing minimal work release threshold while distributing outside copy to stalled evacuators */
-		, survivor_tail_fill = 16	/* forcing outside copy to fill survivor outside copyspace remainder */
-		, tenure_tail_fill = 32		/* forcing outside copy to fill tenure outside copyspace remainder */
-		, stack_overflow = 64		/* forcing outside copy and minimal work release threshold while winding down stack after stack overflow */
-		, depth_first = 128			/* forcing depth-first scanning up the stack until popped to bottom frame without stack_overflow */
-		, recursive_object = 256	/* scanning a mixed self referencing object */
-		, conditions_mask = 511		/* bit mask covering above flags */
-	} ConditionFlag;
-
-	/* Enumeration of stack volume metrics: bytes copied inside, outside, bytes scanned are reset when stack empties */
-	typedef enum StackVolumeMetric {
-		 inside
-		, outside
-		, scanned
-	} StackVolumeMetric;
-
 	/* at least 3 stack frames are required -- bottom frame and a parking frame per region to hold whitespace when bottom frame is cleared */
-	uintptr_t _conditionFlags;						/* bitmap of flags that signal conditions raised during scanning */
 	MM_EnvironmentStandard *_env;					/* collecting thread environment (this thread) */
 	MM_EvacuatorController * const _controller;		/* controller provides collective services and instrumentation */
 	MM_EvacuatorDelegate _delegate;					/* implements methods the evacuator delegates to the language/runtime */
@@ -137,11 +115,11 @@ private:
 	bool scanClearable();
 	void scanComplete();
 
+	void scan();
 	MMINLINE void pull(MM_EvacuatorWorklist *worklist);
 	MMINLINE void pull(MM_EvacuatorCopyspace *copyspace);
-	MMINLINE void scan();
 	MMINLINE GC_ObjectScanner *scanner(const bool advanceScanHead = false);
-	MMINLINE void chain(omrobjectptr_t linkedObject, uintptr_t selfReferencingSlotOffset);
+	MMINLINE void chain(omrobjectptr_t linkedObject, const uintptr_t selfReferencingSlotOffset, const uintptr_t worklistVolumeCeiling);
 	MMINLINE MM_EvacuatorScanspace *next(MM_EvacuatorScanspace *nextFrame, const Region region);
 	MMINLINE void push(MM_EvacuatorScanspace * const nextFrame);
 	MMINLINE void copy();
@@ -157,13 +135,11 @@ private:
 	MMINLINE bool shouldRefreshCopyspace(const Region region, const uintptr_t slotObjectSizeAfterCopy, const uintptr_t copyspaceRemainder);
 	MMINLINE bool shouldCopyOutside(const Region region);
 
-	MMINLINE bool isConditionSet(uintptr_t conditionFlags);
 	MMINLINE void setCondition(ConditionFlag condition, bool value);
 	MMINLINE ConditionFlag copyspaceTailFillCondition(Region region);
 	MMINLINE bool isForceOutsideCopyCondition(Region region);
-	MMINLINE bool isBreadthFirstRootCondition();
-	MMINLINE bool isBreadthFirstCondition();
 	MMINLINE bool isDistributeWorkCondition();
+	MMINLINE bool isBreadthFirstCondition();
 
 	MMINLINE bool getWork();
 	MMINLINE void findWork();
@@ -490,13 +466,12 @@ public:
 	 */
 	MM_Evacuator(uintptr_t workerIndex, MM_EvacuatorController *controller, MM_GCExtensionsBase *extensions)
 		: MM_EvacuatorBase(extensions)
-		, _conditionFlags(_extensions->evacuatorScanOptions)
 		, _env(NULL)
 		, _controller(controller)
 		, _delegate()
 		, _objectModel(&_extensions->objectModel)
 		, _forge(_extensions->getForge())
-		, _maxStackDepth((0 == (extensions->evacuatorScanOptions & breadth_first_always)) ? extensions->evacuatorMaximumStackDepth : 1)
+		, _maxStackDepth(!isScanOptionSelected(extensions, breadth_first_always) ? extensions->evacuatorMaximumStackDepth : 1)
 		, _maxInsideCopySize(_objectModel->adjustSizeInBytes(extensions->evacuatorMaximumInsideCopySize))
 		, _maxInsideCopyDistance(_objectModel->adjustSizeInBytes(extensions->evacuatorMaximumInsideCopyDistance))
 		, _workerIndex(workerIndex)
@@ -520,11 +495,6 @@ public:
 		, _abortedCycle(false)
 	{
 		_typeId = __FUNCTION__;
-
-		/* minimum stack depth forces breadth-first always and breadth-first always forces breadth-first roots */
-		if (isEvacuatorScanning(_extensions, breadth_first_always) || (_extensions->evacuatorMaximumStackDepth <= MM_EvacuatorBase::min_scan_stack_depth)) {
-			_conditionFlags |= ((uintptr_t)breadth_first_always | (uintptr_t)breadth_first_roots);
-		}
 
 		_copiedBytesDelta[survivor] = _copiedBytesDelta[tenure] = 0;
 		_copyspaceOverflow[survivor] = _copyspaceOverflow[tenure] = 0;

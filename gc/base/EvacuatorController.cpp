@@ -139,7 +139,7 @@ MM_EvacuatorController::collectorStartup(MM_GCExtensionsBase* extensions)
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 	if (extensions->isEvacuatorEnabled()) {
 #if defined(EVACUATOR_DEBUG)
-		if (MM_EvacuatorBase::isEvacuatorTracing(_extensions, EVACUATOR_DEBUG_END)) {
+		if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_END)) {
 #endif /* defined(EVACUATOR_DEBUG) */
 			OMRPORT_ACCESS_FROM_OMRVM(_omrVM);
 			_collectorStartTime = omrtime_hires_clock();
@@ -162,7 +162,7 @@ MM_EvacuatorController::collectorShutdown(MM_GCExtensionsBase* extensions)
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 #if defined(EVACUATOR_DEBUG)
-	if (MM_EvacuatorBase::isEvacuatorTracing(_extensions, EVACUATOR_DEBUG_END)) {
+	if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_END)) {
 #endif /* defined(EVACUATOR_DEBUG) */
 		OMRPORT_ACCESS_FROM_OMRVM(_omrVM);
 		uint64_t collectorElapsedMicros = omrtime_hires_delta(_collectorStartTime, omrtime_hires_clock(), OMRPORT_TIME_DELTA_IN_MICROSECONDS);
@@ -196,7 +196,7 @@ MM_EvacuatorController::flushTenureWhitespace(bool shutdown)
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 #if defined(EVACUATOR_DEBUG)
-	if (MM_EvacuatorBase::isEvacuatorTracing(_extensions, EVACUATOR_DEBUG_END)) {
+	if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_END)) {
 #endif /* defined(EVACUATOR_DEBUG) */
 		OMRPORT_ACCESS_FROM_OMRVM(_omrVM);
 		omrtty_printf("%5lu      :%10s; tenure; discarded:%lx; flushed:%lx; recycled:%lx\n", _history.getEpoch()->gc,
@@ -300,7 +300,7 @@ MM_EvacuatorController::bindWorker(MM_EnvironmentStandard *env)
 			OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
 			_history.reset(_extensions->scavengerStats._gcCount, omrtime_hires_clock(), _copyspaceAllocationCeiling[MM_Evacuator::survivor], _copyspaceAllocationCeiling[MM_Evacuator::tenure]);
 #if defined(EVACUATOR_DEBUG)
-			if (MM_EvacuatorBase::isEvacuatorTracing(_extensions, EVACUATOR_DEBUG_END)) {
+			if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_END)) {
 #endif /* defined(EVACUATOR_DEBUG) */
 				omrtty_printf("%5lu      :  gc start; survivor{%lx %lx} tenure{%lx %lx} evacuate{%lx %lx}; threads:%lu; projection:%lx; allocation:%lx\n",
 						_extensions->scavengerStats._gcCount,
@@ -308,6 +308,13 @@ MM_EvacuatorController::bindWorker(MM_EnvironmentStandard *env)
 						(uintptr_t)_heapLayout[1][0], (uintptr_t)_heapLayout[1][1],
 						(uintptr_t)_heapLayout[2][0], (uintptr_t)_heapLayout[2][1],
 						_evacuatorCount, projectedEvacuationBytes, copyspaceSize);
+				omrtty_printf("%5lu      :   options;", _extensions->scavengerStats._gcCount);
+				for (uintptr_t condition = 1; condition < MM_Evacuator::conditions_mask; condition <<= 1) {
+					if (MM_Evacuator::isScanOptionSelected(_extensions, condition)) {
+						omrtty_printf(" %s", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition));
+					}
+				}
+				omrtty_printf("\n");
 #if defined(EVACUATOR_DEBUG)
 			}
 #endif /* defined(EVACUATOR_DEBUG) */
@@ -326,7 +333,7 @@ MM_EvacuatorController::bindWorker(MM_EnvironmentStandard *env)
 	Debug_MM_true(_evacuatorCount == env->_currentTask->getThreadCount());
 	Debug_MM_true(testEvacuatorBit(workerIndex, _evacuatorMask));
 	Debug_MM_true(isEvacuatorBitmapFull(_evacuatorMask));
-	if (MM_EvacuatorBase::isEvacuatorTracing(_extensions, EVACUATOR_DEBUG_CYCLE)) {
+	if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_CYCLE)) {
 		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
 		omrtty_printf("%5lu %2lu %2lu: %cbind[%2lu]; ", getEpoch()->gc, getEpoch()->epoch, workerIndex, env->isMasterThread() ? '*' : ' ', _evacuatorCount);
 		printEvacuatorBitmap(env, "bound", _boundEvacuatorBitmap);
@@ -361,7 +368,7 @@ MM_EvacuatorController::unbindWorker(MM_EnvironmentStandard *env)
 	}
 
 #if defined(EVACUATOR_DEBUG)
-	if (MM_EvacuatorBase::isEvacuatorTracing(_extensions, EVACUATOR_DEBUG_CYCLE)) {
+	if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_CYCLE)) {
 		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
 		omrtty_printf("%5lu %2lu %2lu:    unbind; ", getEpoch()->gc, getEpoch()->epoch, evacuator->getWorkerIndex());
 		printEvacuatorBitmap(env, "bound", _boundEvacuatorBitmap);
@@ -369,7 +376,7 @@ MM_EvacuatorController::unbindWorker(MM_EnvironmentStandard *env)
 		printEvacuatorBitmap(env, "; resuming", _resumingEvacuatorBitmap);
 		omrtty_printf("; flags:%lx\n", _evacuatorFlags);
 	}
-	if ((MM_EvacuatorBase::isEvacuatorTracing(_extensions, EVACUATOR_DEBUG_HEAPCHECK)) && isEvacuatorBitmapEmpty(_boundEvacuatorBitmap)) {
+	if ((MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_HEAPCHECK)) && isEvacuatorBitmapEmpty(_boundEvacuatorBitmap)) {
 		evacuator->checkSurvivor();
 		evacuator->checkTenure();
 	}
@@ -384,7 +391,7 @@ void MM_EvacuatorController::assertGenerationalInvariant(MM_EnvironmentStandard 
 	OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
 	Debug_MM_true(hasCompletedScan() || isAborting());
 	Debug_MM_true(hasCompletedScan() != isAborting());
-	if (0 != (_extensions->evacuatorTraceOptions & (EVACUATOR_DEBUG_CYCLE | EVACUATOR_DEBUG_WORK)) {
+	if (MM_Evacuator::isTraceOptionSelected(_extensions, (EVACUATOR_DEBUG_CYCLE | EVACUATOR_DEBUG_WORK))) {
 		omrtty_printf("%5lu %2lu %2lu:  end scan; ", _history.getEpoch()->epoch, env->getEvacuator()->getWorkerIndex());
 		printEvacuatorBitmap(env, "stalled", _stalledEvacuatorBitmap);
 		printEvacuatorBitmap(env, "; resuming", _resumingEvacuatorBitmap);
@@ -552,7 +559,7 @@ MM_EvacuatorController::reportProgress(MM_Evacuator *worker, uintptr_t oldScanne
 		uintptr_t maxVolume = 0, minVolume = UINTPTR_MAX, totalVolume = 0;
 		uintptr_t volumeQuota = getWorkNotificationQuota(_minimumWorkspaceSize);
 		for (uintptr_t index = 0; index < _evacuatorCount; index += 1) {
-			MM_Evacuator *next = _evacuatorTask[index];
+			MM_Evacuator *next = isBoundEvacuator(index) ? _evacuatorTask[index] : NULL;
 			if (NULL != next) {
 				uintptr_t volume = next->getVolumeOfWork();
 				totalVolume += volume;
@@ -717,14 +724,14 @@ MM_EvacuatorController::getWhitespace(MM_Evacuator *evacuator, MM_Evacuator::Reg
 	}
 
 #if defined(EVACUATOR_DEBUG)
-	if ((NULL != whitespace) && (MM_EvacuatorBase::isEvacuatorTracing(_extensions, EVACUATOR_DEBUG_ALLOCATE))) {
+	if ((NULL != whitespace) && (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_ALLOCATE))) {
 		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
 		omrtty_printf("%5lu %2lu %2lu:  allocate; %s; %lx %lx %lx %lx %lx %lx %lx\n",
 				getEpoch()->gc, getEpoch()->epoch, evacuator->getWorkerIndex(), ((MM_Evacuator::survivor == region) ? "survivor" : "tenure"),
 				(uintptr_t)whitespace, ((NULL != whitespace) ? whitespace->length() : 0), length, maximumLength, optimalSize,
 				_copyspaceAllocationCeiling[region], _objectAllocationCeiling[region]);
 	}
-	if ((NULL != whitespace) && (MM_EvacuatorBase::isEvacuatorTracing(_extensions, EVACUATOR_DEBUG_POISON_DISCARD))) {
+	if ((NULL != whitespace) && (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_POISON_DISCARD))) {
 		MM_EvacuatorWhitespace::poison(whitespace);
 	}
 #endif /* defined(EVACUATOR_DEBUG) */
@@ -871,13 +878,13 @@ MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
 		for (uintptr_t cachesize = 0; cachesize < OMR_SCAVENGER_CACHESIZE_BINS; cachesize += 1) {
 			omrtty_printf(" %llu", stats->_copy_cachesize_counts[cachesize]);
 		}
-		omrtty_printf(" %llx\n", stats->_copy_cachesize_sum);
+		omrtty_printf(" %lx\n", stats->_copy_cachesize_sum);
 		omrtty_printf("%5lu      :  worksize;", stats->_gcCount);
 		for (uintptr_t worksize = 0; worksize < OMR_SCAVENGER_DISTANCE_BINS; worksize += 1) {
 			omrtty_printf(" %llu", stats->_work_packetsize_counts[worksize]);
 		}
 
-		omrtty_printf(" %llx\n", stats->_work_packetsize_sum);
+		omrtty_printf(" %lx\n", stats->_work_packetsize_sum);
 		omrtty_printf("%5lu      :     small;", stats->_gcCount);
 		for (uintptr_t smallsize = 0; smallsize <= OMR_SCAVENGER_DISTANCE_BINS; smallsize += 1) {
 			omrtty_printf(" %lu", stats->_small_object_counts[smallsize]);
@@ -934,26 +941,31 @@ MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
 					copiedBytes, _scannedBytes, insideBytes, _copiedBytes[MM_Evacuator::tenure], _finalDiscardedBytes, _finalFlushedBytes, _finalRecycledBytes);
 			reportConditionCounts(getEpoch()->gc, getEpoch()->epoch);
 
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 			Debug_MM_true((_finalDiscardedBytes + _finalFlushedBytes) == (stats->_flipDiscardBytes + stats->_tenureDiscardBytes));
-			if (MM_EvacuatorBase::isEvacuatorTracing(_extensions, EVACUATOR_DEBUG_EPOCH)) {
+			if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_EPOCH)) {
 				for (uintptr_t epochIndex =  0; epochIndex <= _history.maxEpoch; epochIndex += 1) {
 					MM_EvacuatorHistory::Epoch *epoch = _history.getEpoch(epochIndex);
 					if (_history.isRecorded(epoch)) {
 						uintptr_t totalCopied = epoch->survivorCopied + epoch->tenureCopied;
+						MM_EvacuatorHistory::Epoch *previous = _history.priorEpoch(epoch);
+						uintptr_t deltaScanned = epoch->scanned;
+						uintptr_t deltaCopied = totalCopied;
+						if (epoch > previous) {
+							deltaCopied -= (previous->survivorCopied + previous->tenureCopied);
+							deltaScanned -= previous->scanned;
+						}
 						uintptr_t unscanned = (totalCopied > epoch->scanned) ? (totalCopied - epoch->scanned) : 0;
 						double copyScanRatio = (0 < epoch->scanned) ? ((double)totalCopied / (double)epoch->scanned) : 0.0;
-						omrtty_printf("%5lu %2lu  0:     epoch; %0.3f %8lx %8lx %8lx %8lx %8lx %8lx %8.3f ", epoch->gc, epoch->epoch,
-								copyScanRatio, epoch->survivorCopied, epoch->tenureCopied,	epoch->scanned, unscanned,
+						double deltaCopyScanRatio = (0 < deltaScanned) ? ((double)deltaCopied / (double)deltaScanned) : 0.0;
+						omrtty_printf("%5lu %2lu  0:     epoch; %0.3f %0.3f %8lx %8lx %8lx %8lx %8lx %8lx %8.3f ", epoch->gc, epoch->epoch,
+								copyScanRatio, deltaCopyScanRatio, epoch->survivorCopied, epoch->tenureCopied,	epoch->scanned, unscanned,
 								epoch->survivorAllocationCeiling, epoch->tenureAllocationCeiling,
 								((double)(epoch->duration) / 1000.0));
 						omrtty_printf("%8lx %8lx %8lx %6lx %3lx %3lx %3lx %4lu %3lu\n", epoch->sumVolumeOfWork, epoch->minVolumeOfWork, epoch->maxVolumeOfWork,
 								epoch->volumeQuota, epoch->volumeHistogram[0], epoch->volumeHistogram[1], epoch->volumeHistogram[2], epoch->cleared, epoch->stalled);
-//10 15  0:     epoch; 1.199   cb6340   806e38  114ceb8   3702c0    20000    20000    0.270   3077fc    330d8   170f20        0   0   4 2000    0
 					}
 				}
 			}
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
 			/* total copied/scanned byte counts should be equal unless we are aborting */
 			Assert_GC_true_with_message4(env, (isAborting() || hasCompletedScan()), "survived+tenured (%lx+%lx)=%lx != %lx scanned\n",
@@ -967,38 +979,43 @@ MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
 void
 MM_EvacuatorController::reportConditionCounts(uintptr_t gc, uintptr_t epoch)
 {
-	const char *conditionNames[] = {
-		"breadth_first_always"
-		, "breadth_first_roots"
-		, "scanning_heap"
-		, "stall"
-		, "survivor_tail_fill"
-		, "tenure_tail_fill"
-		, "stack_overflow"
-		, "depth_first"
-	};
-
+	uintptr_t conditionCount = MM_Math::floorLog2(MM_Evacuator::conditions_mask + 1);
 	uintptr_t conditionCountTotals[MM_Evacuator::conditions_mask + 1];
+	uintptr_t conditionCountSummary[conditionCount];
 
+	memset(conditionCountSummary, 0, sizeof(conditionCountSummary));
 	memset(conditionCountTotals, 0, sizeof(conditionCountTotals));
 
+	uintptr_t objectCount = 0;
 	for (uintptr_t index = 0; index < _evacuatorCount; index++) {
 		const uintptr_t *conditionCounts = _evacuatorTask[index]->getConditionCounts();
 		for (uintptr_t flags = 0; flags <= MM_Evacuator::conditions_mask; flags += 1) {
+			for (uintptr_t condition = 1; condition < conditionCount; condition += 1) {
+				if (0 != (flags & (1 << condition))) {
+					conditionCountSummary[condition] += conditionCounts[flags];
+				}
+			}
 			conditionCountTotals[flags] += conditionCounts[flags];
+			objectCount += conditionCounts[flags];
 		}
 	}
+	conditionCountSummary[0] = conditionCountTotals[0];
 
 	OMRPORT_ACCESS_FROM_OMRVM(_omrVM);
-	omrtty_printf("%5lu %2lu   :conditions;\n", gc, epoch);
-	omrtty_printf("%10lx |<none>\n", conditionCountTotals[0]);
+	omrtty_printf("%5lu %2lu   :conditions;", gc, epoch);
+	for (uintptr_t condition = 0; condition < conditionCount; condition += 1) {
+		omrtty_printf(" %lu", conditionCountSummary[condition]);
+	}
+	omrtty_printf(" %lu\n", objectCount);
+	double percent = (100.0 * (double)conditionCountTotals[0]) / (double)objectCount;
+	omrtty_printf("%10lu :%10.3f| <none>\n", conditionCountTotals[0], percent);
 	for (uintptr_t flags = 1; flags <= MM_Evacuator::conditions_mask; flags += 1) {
 		if (0 != conditionCountTotals[flags]) {
-			omrtty_printf("%10lx ", flags, conditionCountTotals[flags]);
-			const uintptr_t bits = MM_Math::floorLog2(MM_Evacuator::conditions_mask + 1);
-			for (uintptr_t bitIndex = 0; bitIndex < bits; bitIndex += 1) {
-				if (0 != (flags & (1 << bitIndex))) {
-					omrtty_printf("|%s",conditionNames[bitIndex]);
+			double percent = (100.0 * (double)conditionCountTotals[flags]) / (double)objectCount;
+			omrtty_printf("%10lu :%10.3f", conditionCountTotals[flags], percent);
+			for (uintptr_t condition = 1; condition < MM_Evacuator::conditions_mask; condition <<= 1) {
+				if (0 != (flags & condition)) {
+					omrtty_printf("| %s", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition));
 				}
 			}
 			omrtty_printf("\n");
@@ -1039,7 +1056,7 @@ MM_EvacuatorController::waitToSynchronize(MM_Evacuator *worker, const char *id)
 #if defined(EVACUATOR_DEBUG)
 	Debug_MM_true(!testEvacuatorBit(worker->getWorkerIndex(), _stalledEvacuatorBitmap));
 	Debug_MM_true(!testEvacuatorBit(worker->getWorkerIndex(), _resumingEvacuatorBitmap));
-	if (MM_EvacuatorBase::isEvacuatorTracing(_extensions, EVACUATOR_DEBUG_CYCLE)) {
+	if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_CYCLE)) {
 		MM_EnvironmentBase *env = worker->getEnvironment();
 		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
 		omrtty_printf("%5lu %2lu %2lu:      sync; ", getEpoch()->gc, getEpoch()->epoch, worker->getWorkerIndex());
@@ -1056,14 +1073,14 @@ MM_EvacuatorController::continueAfterSynchronizing(MM_Evacuator *worker, uint64_
 #if defined(EVACUATOR_DEBUG)
 	Debug_MM_true(!testEvacuatorBit(worker->getWorkerIndex(), _stalledEvacuatorBitmap));
 	Debug_MM_true(!testEvacuatorBit(worker->getWorkerIndex(), _resumingEvacuatorBitmap));
-	if (MM_EvacuatorBase::isEvacuatorTracing(_extensions, EVACUATOR_DEBUG_CYCLE)) {
+	if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_CYCLE)) {
 		MM_EnvironmentBase *env = worker->getEnvironment();
 		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
 		uint64_t waitMicros = omrtime_hires_delta(startTime, endTime, OMRPORT_TIME_DELTA_IN_MICROSECONDS);
 		omrtty_printf("%5lu %2lu %2lu:  continue; ", getEpoch()->gc, getEpoch()->epoch, worker->getWorkerIndex());
 		printEvacuatorBitmap(env, "stalled", _stalledEvacuatorBitmap);
 		printEvacuatorBitmap(env, "; resuming", _resumingEvacuatorBitmap);
-		omrtty_printf("; flags:%lx; micros:%llx; %s\n", _evacuatorFlags, waitMicros, MM_EvacuatorBase::callsite(id));
+		omrtty_printf("; flags:%lx; micros:%%lx; %s\n", _evacuatorFlags, waitMicros, MM_EvacuatorBase::callsite(id));
 	}
 #endif /* defined(EVACUATOR_DEBUG) */
 }

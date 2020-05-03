@@ -274,7 +274,7 @@ public:
 	 * @param work the workspace to add
 	 */
 	void
-	add(MM_EvacuatorWorkspace *work)
+	add(MM_EvacuatorWorkspace *work, bool push = false)
 	{
 		Debug_MM_true((0 == _volume) == (NULL == _head));
 		Debug_MM_true((NULL == _head) == (NULL == _tail));
@@ -286,11 +286,13 @@ public:
 
 		/* if work not split array workspace and volume is greater than head insert as head else append as tail */
 		work->next = NULL;
+		push |= (0 == work->offset) && (volume() < MM_EvacuatorBase::min_split_indexable_size) && (volume(work) > volume(_head));
 		if (NULL == _head) {
 			_head = _tail = work;
+		} else if (push) {
+			work->next = _head;
+			_head = work;
 		} else if (_head == _tail) {
-			_head->next = _tail = work;
-		} else if ((0 == work->offset) && (volume() < MM_EvacuatorBase::min_split_indexable_size) && (volume(work) > volume(_head))) {
 			work->next = _head;
 			_head = work;
 		} else {

@@ -70,7 +70,7 @@ protected:
 
 public:
 	/* epochs are unrecorded until duration is set */
-	bool isRecorded(Epoch *epoch) { return (NULL != epoch) && (UINTPTR_MAX > epoch->duration); }
+	bool isRecorded(Epoch *epoch) { return (NULL != epoch) && (0 < epoch->tenureAllocationCeiling) && (0 < epoch->survivorAllocationCeiling); }
 
 	/* get the most recently committed epoch (or an empty epoch record if none committed yet) */
 	const Epoch *getEpoch() { return getEpoch((0 < _last) ? (uintptr_t)_last : 0); }
@@ -97,28 +97,21 @@ public:
 		return &_history[_last];
 	}
 
+	/* return most recently recorded epoch previous to input epoch */
+	Epoch *priorEpoch(Epoch *epoch)
+	{
+		MM_EvacuatorHistory::Epoch *previous = epoch - 1;
+		while ((previous > &_history[0]) && !isRecorded(previous)) {
+			previous -= 1;
+		}
+		return isRecorded(previous) ? previous : epoch;
+	}
+
 	/* clear history for starting a gc cycle */
 	void
 	reset(uintptr_t gc = 0, uintptr_t timestamp = 0, uintptr_t survivorAllocationCeiling = 0, uintptr_t tenureAllocationCeiling = 0)
 	{
-		for (uintptr_t i = 0; i < maxEpoch; i += 1) {
-			_history[i].gc = 0;
-			_history[i].epoch = 0;
-			_history[i].duration = UINTPTR_MAX;
-			_history[i].survivorCopied = 0;
-			_history[i].tenureCopied = 0;
-			_history[i].scanned = 0;
-			_history[i].cleared = 0;
-			_history[i].stalled = 0;
-			_history[i].survivorAllocationCeiling = 0;
-			_history[i].tenureAllocationCeiling = 0;
-			_history[i].minVolumeOfWork = 0;
-			_history[i].maxVolumeOfWork = 0;
-			_history[i].sumVolumeOfWork = 0;
-			for (uintptr_t j = 0; j < 3; ++j) {
-				_history[i].volumeHistogram[j] = 0;
-			}
-		}
+		memset(&_history[0], 0, (maxEpoch * sizeof(Epoch)));
 
 		_history[0].survivorAllocationCeiling = survivorAllocationCeiling;
 		_history[0].tenureAllocationCeiling = tenureAllocationCeiling;

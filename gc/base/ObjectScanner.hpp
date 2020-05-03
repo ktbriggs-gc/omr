@@ -51,11 +51,14 @@ class GC_ObjectScanner : public MM_BaseVirtual
 {
 	/* Data Members */
 private:
+	const uintptr_t *_selfReferencingSlotOffsets;
+	uintptr_t _selfReferencingSlotCount;
 
 protected:
+	static const intptr_t _bitsPerScanMap = sizeof(uintptr_t) << 3;
+
 	const uintptr_t _compressObjectReferences;
 	const uintptr_t _sizeofObjectReferenceSlot;
-	static const intptr_t _bitsPerScanMap = sizeof(uintptr_t) << 3;
 
 	uintptr_t _scanMap;						/**< Bit map of reference slots in object being scanned (32/64-bit window) */
 #if defined(OMR_GC_LEAF_BITS)
@@ -105,10 +108,11 @@ protected:
 	 * @param[in] scanPtr The first slot contained in the object to be scanned
 	 * @param[in] scanMap Bit map marking object reference slots, with least significant bit mapped to slot at scanPtr
 	 * @param[in] flags A bit mask comprised of InstanceFlags
-	 * @param[in] hotFieldsDescriptor Hot fields descriptor for languages that support hot field tracking (0 if no hot fields support)
 	 */
 	GC_ObjectScanner(MM_EnvironmentBase *env, fomrobject_t *scanPtr, uintptr_t scanMap, uintptr_t flags)
 		: MM_BaseVirtual()
+		, _selfReferencingSlotOffsets(NULL)
+		, _selfReferencingSlotCount(0)
 		, _compressObjectReferences(env->getExtensions()->compressObjectReferences() ? 1 : 0)
 		, _sizeofObjectReferenceSlot((uintptr_t)GC_SlotObject::addToSlotAddress(scanPtr, 1, (1 == _compressObjectReferences)) - (uintptr_t)scanPtr)
 		, _scanMap(scanMap)
@@ -147,7 +151,6 @@ protected:
 	{
 	}
 
-public:
 	/**
 	 * Helper function can be used to rebuild bit map of reference fields in
 	 * implementation of getNextSlotMap(). Simply call this method once for
@@ -176,9 +179,9 @@ public:
 		return true;
 	}
 
+public:
 	MMINLINE bool compressObjectReferences() { return (0 != _compressObjectReferences); }
 
-public:
 	/**
 	 * Leaf objects contain no reference slots (eg plain value object or empty array).
 	 *
@@ -199,18 +202,33 @@ public:
 	virtual fomrobject_t *getNextSlotMap(uintptr_t *scanMap, bool *hasNextSlotMap) = 0;
 
 	/**
-	 * For objects with one or more self-referencing fields, eg linked list nodes, n-ary trees,
-	 * caller may use this method to iterate over these fields, requesting the first field offset
-	 * when receiving input 0 and returning the (N+1)st offset for the Nth offset is input.
+	 * Scanners for objects with one or more self-referencing fields may call this method to set the field
+	 * offsets to be returned from getSelfReferencingSlotOffsets().
 	 *
 	 * Field offsets are presented in fomrobject_t-size slot offsets from object header. For example,
 	 * if the header occupies 2 fomorbject_t slots, the offset of the first slot in contiguous body
 	 * of object would be 2.
 	 *
+	 * @param[in] offsets the fomrobject_t slot offsets of the self-referencing fields in the scanned object
+	 * @param[in] count the number of self referencing fied offsets in the offsets array
+	 */
+	void setSelfReferencingSlotOffsets(uintptr_t *offsets, uintptr_t count)
+	{
+		_selfReferencingSlotOffsets = offsets;
+		_selfReferencingSlotCount = count;
+	}
+
+	/**
+	 * Get self-referencing field slot offsets for a recursively defined object.
+	 *
 	 * @param[in] lastOffset the offset returned from the most recent call, or 0 if not yet called
 	 * @return the offset of the next self-referencing field
 	 */
-	virtual uintptr_t getNextSelfReferencingSlotOffset(uintptr_t lastSelfReferencingFieldOffset) { return 0; };
+	const uintptr_t *getSelfReferencingSlotOffsets(uintptr_t &count)
+	{
+		count = _selfReferencingSlotCount;
+		return _selfReferencingSlotOffsets;
+	}
 
 	/**
 	 * Get the next object slot if one is available.
@@ -344,6 +362,8 @@ public:
 	MMINLINE static bool isIndexableObjectNoSplit(uintptr_t flags) { return (0 != (indexableObjectNoSplit & flags)); }
 
 	MMINLINE bool isIndexableObjectNoSplit() { return (0 != (indexableObjectNoSplit & _flags)); }
+
+	MMINLINE bool isLinkedObjectScanner() { return (0 != (linkedObjectScanner & _flags)); }
 
 	MMINLINE void clearHeadObjectScanner() { _flags &= ~headObjectScanner; }
 
