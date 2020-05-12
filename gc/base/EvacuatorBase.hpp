@@ -100,25 +100,6 @@ class MM_EvacuatorBase : public MM_BaseNonVirtual
 private:
 
 protected:
-	/* Enumeration of conditions that relate to evacuator operation (superset of evacuatorScanOptions */
-	typedef enum ConditionFlag {
-		  breadth_first_always = 1	/* forcing outside copy for all objects all the time */
-		, breadth_first_roots = 2	/* forcing outside copy for root objects */
-		, reverse_roots	= 4			/* adding workspaces to worklist in LIFO order while scanning roots breadth first */
-		, scanning_heap = 8			/* this is raised while evacuator is in collective heap scan */
-		, stall = 16				/* forcing minimal work release threshold while distributing outside copy to stalled evacuators */
-		, recursive_object = 32		/* forcing outside copy for a chain of mixed self referencing objects rooted in object to be scanned */
-		, survivor_tail_fill = 64	/* forcing outside copy to fill survivor outside copyspace remainder */
-		, tenure_tail_fill = 128	/* forcing outside copy to fill tenure outside copyspace remainder */
-		, inside_tail_fill = 256	/* allowing inside copy only as required to fill remainder inside whitespace to discard tolerance (32 bytes) */
-		, stack_overflow = 512		/* forcing outside copy and minimal work release threshold while winding down stack after stack overflow */
-		, depth_first = 1024		/* forcing depth-first scanning up the stack until popped to bottom frame without stack_overflow */
-		, conditions_mask = 2047	/* bit mask covering above flags */
-		, static_mask = (breadth_first_always + breadth_first_roots + reverse_roots)
-		, options_mask = (static_mask + recursive_object)
-		, dynamic_mask = (conditions_mask - static_mask)
-	} ConditionFlag;
-
 	/* Enumeration of stack volume metrics: bytes copied inside, outside, bytes scanned are reset when stack empties */
 	typedef enum StackVolumeMetric {
 		  inside
@@ -145,6 +126,25 @@ protected:
 	const uintptr_t _evacuatorScanOptions;
 
 public:
+	/* Enumeration of conditions that relate to evacuator operation (superset of evacuatorScanOptions */
+	typedef enum ConditionFlag {
+		  breadth_first_always = 1	/* forcing outside copy for all objects all the time */
+		, breadth_first_roots = 2	/* forcing outside copy for root objects */
+		, reverse_roots	= 4			/* adding workspaces to worklist in LIFO order while scanning roots breadth first */
+		, scanning_heap = 8			/* this is raised while evacuator is in collective heap scan */
+		, stall = 16				/* forcing minimal work release threshold while distributing outside copy to stalled evacuators */
+		, recursive_object = 32		/* forcing outside copy for a chain of mixed self referencing objects rooted in object to be scanned */
+		, survivor_tail_fill = 64	/* forcing outside copy to fill survivor outside copyspace remainder */
+		, tenure_tail_fill = 128	/* forcing outside copy to fill tenure outside copyspace remainder */
+		, inside_tail_fill = 256	/* allowing inside copy only as required to fill remainder inside whitespace to discard tolerance (32 bytes) */
+		, stack_overflow = 512		/* forcing outside copy and minimal work release threshold while winding down stack after stack overflow */
+		, depth_first = 1024		/* forcing depth-first scanning up the stack until popped to bottom frame without stack_overflow */
+		, conditions_mask = 2047	/* bit mask covering above flags */
+		, static_mask = (breadth_first_always + breadth_first_roots + reverse_roots)
+		, options_mask = (static_mask + recursive_object)
+		, dynamic_mask = (conditions_mask - static_mask)
+	} ConditionFlag;
+
 	/* Minimal size of scan stack -- a value of 1 forces breadth first scanning */
 	static const uintptr_t min_scan_stack_depth = 1;
 
@@ -154,17 +154,17 @@ public:
 	/* minimum size of whitespace that can be retained on a whitelist */
 	static const uintptr_t min_reusable_whitespace = 256;
 
-	/* minimum size of a workspace that can be released to a worklist */
-	static const uintptr_t min_workspace_size = 512;
-
 	/* largest amount of whitespace that can be trimmed and discarded from stack whitespaces */
 	static const uintptr_t max_scanspace_remainder = 32;
 
 	/* largest amount of whitespace that can be trimmed and discarded from outside copyspaces */
 	static const uintptr_t max_copyspace_remainder = 256;
 
-	/* multiplier for minimum workspace size determines threshold byte count for objects overflowing copyspace whitespace remainder */
-	static const uintptr_t max_copyspace_overflow_quanta = 4;
+	/* smallest allowable setting for work release threshold overrides controller's minimum workspace size */
+	static const uintptr_t min_workspace_release = 512;
+
+	/* multiplier for minimum workspace release determines threshold byte count for objects overflowing copyspace whitespace remainder */
+	static const uintptr_t max_copyspace_overflow_quanta = 6;
 
 	/* maximum number of array element slots to include in each split array segment */
 	static const uintptr_t max_split_segment_elements = DEFAULT_ARRAY_SPLIT_MINIMUM_SIZE;
@@ -196,76 +196,65 @@ public:
 	{
 		return (0 != (extensions->evacuatorScanOptions & scanOptions));
 	}
-	bool isScanOptionSelected(uintptr_t scanOptions) { return (0 != (_evacuatorScanOptions & scanOptions)); }
+	bool isScanOptionSelected(uintptr_t scanOptions) const { return (0 != (_evacuatorScanOptions & scanOptions)); }
 
 	static bool
 	isTraceOptionSelected(MM_GCExtensionsBase *extensions, uintptr_t traceOptions)
 	{
 		return (0 != (extensions->evacuatorTraceOptions & traceOptions));
 	}
-	bool isTraceOptionSelected(uintptr_t traceOptions) { return (0 != (_evacuatorTraceOptions & traceOptions)); }
+	bool isTraceOptionSelected(uintptr_t traceOptions) const { return (0 != (_evacuatorTraceOptions & traceOptions)); }
 
-	bool isConditionSet(uintptr_t conditionFlags) {return (0 != (_conditionFlags & conditionFlags)); }
+	bool isConditionSet(uintptr_t conditionFlags) const {return (0 != (_conditionFlags & conditionFlags)); }
 
-	MM_GCExtensionsBase *getExtensions() { return _extensions; }
+	MM_GCExtensionsBase *getExtensions() const { return _extensions; }
 
-	bool compressObjectReferences() { return _compressObjectReferences; }
+	bool compressObjectReferences() const { return _compressObjectReferences; }
 
-	uintptr_t getReferenceSlotSize() { return _sizeofObjectReferenceSlot; }
+	uintptr_t getReferenceSlotSize() const { return _sizeofObjectReferenceSlot; }
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 	static uintptr_t conditionCount() { return MM_Math::floorLog2((uintptr_t)conditions_mask + 1); }
 	static const char *
 	conditionName(ConditionFlag condition)
 	{
-		static const char *conditionNames[] = {
-			  "breadth_first_always"
-			, "breadth_first_roots"
-			, "reverse_roots"
-			, "scanning_heap"
-			, "stall"
-			, "recursive_object"
-			, "survivor_tail_fill"
-			, "tenure_tail_fill"
-			, "inside_tail_fill"
-			, "stack_overflow"
-			, "depth_first"
-		};
 		uintptr_t flag = MM_Math::floorLog2((uintptr_t)condition);
 		Debug_MM_true((flag < conditionCount()) && (((uintptr_t)1 << flag) == condition));
+
+		static const char *conditionNames[] = {"bfa","bfr","rr","sh","stall","ro","stf","ttf","itf","so","df"};
 		return ((flag < conditionCount()) && (((uintptr_t)1 << flag) == condition)) ? conditionNames[flag] : "";
 	}
-	bool isAnyDebugFlagSet(uintptr_t flags) { return isTraceOptionSelected(flags); }
-	bool isDebugEnd() { return isAnyDebugFlagSet(EVACUATOR_DEBUG_END); }
-	bool isDebugCycle() { return isAnyDebugFlagSet(EVACUATOR_DEBUG_CYCLE); }
-	bool isDebugEpoch() { return isAnyDebugFlagSet(EVACUATOR_DEBUG_EPOCH); }
-	bool isDebugStack() { return isAnyDebugFlagSet(EVACUATOR_DEBUG_STACK); }
-	bool isDebugWork() { return isAnyDebugFlagSet(EVACUATOR_DEBUG_WORK); }
-	bool isDebugCopy() { return isAnyDebugFlagSet(EVACUATOR_DEBUG_COPY); }
-	bool isDebugRemembered() { return isAnyDebugFlagSet(EVACUATOR_DEBUG_REMEMBERED); }
-	bool isDebugWhitelists() { return isAnyDebugFlagSet(EVACUATOR_DEBUG_WHITELISTS); }
-	bool isDebugPoisonDiscard() { return isAnyDebugFlagSet(EVACUATOR_DEBUG_POISON_DISCARD); }
-	bool isDebugAllocate() { return isAnyDebugFlagSet(EVACUATOR_DEBUG_ALLOCATE); }
-	bool isDebugBackout() { return isAnyDebugFlagSet(EVACUATOR_DEBUG_BACKOUT); }
-	bool isDebugDelegate() { return isAnyDebugFlagSet(EVACUATOR_DEBUG_DELEGATE); }
-	bool isDebugHeapCheck() { return isAnyDebugFlagSet(EVACUATOR_DEBUG_HEAPCHECK); }
+	bool isAnyDebugFlagSet(uintptr_t flags) const { return isTraceOptionSelected(flags); }
+	bool isDebugEnd() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_END); }
+	bool isDebugCycle() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_CYCLE); }
+	bool isDebugEpoch() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_EPOCH); }
+	bool isDebugStack() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_STACK); }
+	bool isDebugWork() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_WORK); }
+	bool isDebugCopy() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_COPY); }
+	bool isDebugRemembered() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_REMEMBERED); }
+	bool isDebugWhitelists() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_WHITELISTS); }
+	bool isDebugPoisonDiscard() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_POISON_DISCARD); }
+	bool isDebugAllocate() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_ALLOCATE); }
+	bool isDebugBackout() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_BACKOUT); }
+	bool isDebugDelegate() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_DELEGATE); }
+	bool isDebugHeapCheck() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_HEAPCHECK); }
 #else
 	static uintptr_t conditionCount() { return 0; }
 	static const char *conditionName(ConditionFlag condition) { return ""; }
-	bool isAnyDebugFlagSet(uintptr_t traceOptions) { return false; }
-	bool isDebugEnd() { return false; }
-	bool isDebugCycle() { return false; }
-	bool isDebugEpoch() { return false; }
-	bool isDebugWork() { return false; }
-	bool isDebugStack() { return false; }
-	bool isDebugCopy() { return false; }
-	bool isDebugRemembered() { return false; }
-	bool isDebugWhitelists() { return false; }
-	bool isDebugPoisonDiscard() { return false; }
-	bool isDebugAllocate() { return false; }
-	bool isDebugBackout() { return false; }
-	bool isDebugDelegate() { return false; }
-	bool isDebugHeapCheck() { return false; }
+	bool isAnyDebugFlagSet(uintptr_t traceOptions) const { return false; }
+	bool isDebugEnd() const { return false; }
+	bool isDebugCycle() const { return false; }
+	bool isDebugEpoch() const { return false; }
+	bool isDebugWork() const { return false; }
+	bool isDebugStack() const { return false; }
+	bool isDebugCopy() const { return false; }
+	bool isDebugRemembered() const { return false; }
+	bool isDebugWhitelists() const { return false; }
+	bool isDebugPoisonDiscard() const { return false; }
+	bool isDebugAllocate() const { return false; }
+	bool isDebugBackout() const { return false; }
+	bool isDebugDelegate() const { return false; }
+	bool isDebugHeapCheck() const { return false; }
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
 	static uintptr_t

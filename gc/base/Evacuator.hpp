@@ -75,7 +75,6 @@ private:
 	uintptr_t _scannedBytesDelta;					/* cumulative number of bytes scanned in survivor semispace or tenure space since last report */
 	uintptr_t _copiedBytesReportingDelta;			/* copied bytes increment for reporting copied/scanned byte counts to controller */
 	uintptr_t _workspaceReleaseThreshold;			/* threshold for releasing accumulated workspace from outside copyspaces */
-	uintptr_t _minWorkspaceSize;					/* smallest allowable setting for work release threshold */
 	uintptr_t _tenureMask;							/* used to determine age threshold for tenuring evacuated objects */
 	MM_ScavengerStats *_stats;						/* pointer to MM_EnvironmentBase::_scavengerStats */
 
@@ -115,7 +114,7 @@ private:
 	bool scanClearable();
 	void scanComplete();
 
-	void scan();
+	MMINLINE void scan();
 	MMINLINE void pull(MM_EvacuatorWorklist *worklist);
 	MMINLINE void pull(MM_EvacuatorCopyspace *copyspace);
 	MMINLINE GC_ObjectScanner *scanner(const bool advanceScanHead = false);
@@ -132,14 +131,14 @@ private:
 
 	MM_EvacuatorCopyspace *reserveOutsideCopyspace(Region *region, const uintptr_t slotObjectSizeAfterCopy, bool useLargeCopyspace);
 	MMINLINE omrobjectptr_t copyOutside(Region region, MM_ForwardedHeader *forwardedHeader, fomrobject_t *referringSlotAddress, const uintptr_t slotObjectSizeBeforeCopy, const uintptr_t slotObjectSizeAfterCopy);
-	MMINLINE bool shouldRefreshCopyspace(const Region region, const uintptr_t slotObjectSizeAfterCopy, const uintptr_t copyspaceRemainder);
-	MMINLINE bool shouldCopyOutside(const Region region);
+	MMINLINE bool shouldRefreshCopyspace(const Region region, const uintptr_t slotObjectSizeAfterCopy, const uintptr_t copyspaceRemainder) const;
 
 	MMINLINE void setCondition(ConditionFlag condition, bool value);
-	MMINLINE ConditionFlag copyspaceTailFillCondition(Region region);
-	MMINLINE bool isForceOutsideCopyCondition(Region region);
-	MMINLINE bool isDistributeWorkCondition();
-	MMINLINE bool isBreadthFirstCondition();
+	MMINLINE ConditionFlag copyspaceTailFillCondition(Region region) const;
+	MMINLINE bool isForceOutsideCopyCondition(Region region) const;
+	MMINLINE bool isForceOutsideCopyCondition() const;
+	MMINLINE bool isDistributeWorkCondition() const;
+	MMINLINE bool isBreadthFirstCondition() const;
 
 	MMINLINE bool getWork();
 	MMINLINE void findWork();
@@ -147,16 +146,16 @@ private:
 	MMINLINE void addWork(MM_EvacuatorWorkspace *work);
 	MMINLINE bool hasDistributableWork(uintptr_t workReleaseThreshold, uintptr_t volumeOfWork);
 	MMINLINE void splitPointerArrayWork(omrobjectptr_t pointerArray);
-	MMINLINE bool isSplitArrayWorkspace(const MM_EvacuatorWorkspace *work);
+	MMINLINE bool isSplitArrayWorkspace(const MM_EvacuatorWorkspace *work) const;
 	MMINLINE uintptr_t adjustWorkReleaseThreshold();
 	MMINLINE void flushForWaitState();
 
 	MMINLINE bool isSplitablePointerArray(MM_ForwardedHeader *forwardedHeader, uintptr_t objectSizeInBytes);
-	MMINLINE bool isLargeObject(const uintptr_t objectSizeInBytes);
-	MMINLINE bool isHugeObject(const uintptr_t objectSizeInBytes);
+	MMINLINE bool isLargeObject(const uintptr_t objectSizeInBytes) const;
+	MMINLINE bool isHugeObject(const uintptr_t objectSizeInBytes) const;
 
 	MMINLINE void flushRememberedSet();
-	MMINLINE bool isNurseryAge(uintptr_t objectAge);
+	MMINLINE bool isNurseryAge(uintptr_t objectAge) const;
 	MMINLINE bool setRememberedState(omrobjectptr_t object, uintptr_t rememberedState);
 
 	MMINLINE void updateCycleVolumeMetrics();
@@ -217,16 +216,16 @@ public:
 	 */
 	void unbindWorkerThread(MM_EnvironmentStandard *env);
 
-	uintptr_t getWorkerIndex() { return _workerIndex; }
-	MM_EnvironmentStandard *getEnvironment() { return _env; }
+	uintptr_t getWorkerIndex() const { return _workerIndex; }
+	MM_EnvironmentStandard *getEnvironment() const { return _env; }
 	MM_EvacuatorDelegate *getDelegate() { return &_delegate; }
-	bool hasScanWork() { return (NULL != _scanStackFrame); }
+	bool hasScanWork() const { return (NULL != _scanStackFrame); }
 	uintptr_t getVolumeOfWork() { return _workList.volume(); }
 
 
-	bool isInEvacuate(void *address) { return (_heapBounds[evacuate][0] <= (uint8_t *)address) && ((uint8_t *)address < _heapBounds[evacuate][1]); }
-	bool isInSurvivor(void *address) { return (_heapBounds[survivor][0] <= (uint8_t *)address) && ((uint8_t *)address < _heapBounds[survivor][1]); }
-	bool isInTenure(void *address) { return _env->getExtensions()->isOld((omrobjectptr_t)address); }
+	bool isInEvacuate(void *address) const { return (_heapBounds[evacuate][0] <= (uint8_t *)address) && ((uint8_t *)address < _heapBounds[evacuate][1]); }
+	bool isInSurvivor(void *address) const { return (_heapBounds[survivor][0] <= (uint8_t *)address) && ((uint8_t *)address < _heapBounds[survivor][1]); }
+	bool isInTenure(void *address) const { return _env->getExtensions()->isOld((omrobjectptr_t)address); }
 
 	/**
 	 * Get the heap region (survivor|tenure|evacuate) containing an address
@@ -235,7 +234,7 @@ public:
 	 * @return heap region or unreachable if address not in heap
 	 */
 	Region
-	getEvacuationRegion(void *address)
+	getEvacuationRegion(void *address) const
 	{
 		if (isInSurvivor(address)) {
 			return survivor;
@@ -256,7 +255,7 @@ public:
 	 * @return complementary evacuation region
 	 */
 	Region
-	otherEvacuationRegion(Region region)
+	otherEvacuationRegion(Region region) const
 	{
 		Debug_MM_true((survivor == region) || (tenure == region));
 
@@ -479,7 +478,6 @@ public:
 		, _scannedBytesDelta(0)
 		, _copiedBytesReportingDelta(0)
 		, _workspaceReleaseThreshold(0)
-		, _minWorkspaceSize(_objectModel->adjustSizeInBytes(min_workspace_size))
 		, _tenureMask(0)
 		, _stats(NULL)
 		, _stackBottom(MM_EvacuatorScanspace::newInstanceArray(this, _forge, OMR_MAX(_maxStackDepth, unreachable)))

@@ -247,11 +247,11 @@ public:
 		uintptr_t max = MM_Math::floorLog2(maxInsideCopySize);
 		if (bin < max) {
 			bin = objectSize / OMR_SCAVENGER_DISTANCE_BINS;
-			_small_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += 1;
+			_small_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += objectSize;
 			_small_object_counts[bin] += 1;
 		} else {
 			bin = (bin < OMR_SCAVENGER_DISTANCE_BINS) ? bin : (OMR_SCAVENGER_DISTANCE_BINS - 1);
-			_large_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += 1;
+			_large_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += objectSize;
 			_large_object_counts[bin] += 1;
 		}
 	}

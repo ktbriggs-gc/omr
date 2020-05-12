@@ -261,12 +261,12 @@ public:
 	/**
 	 * Returns sum of work volumes of workspaces in the list (volatile).
 	 */
-	uintptr_t volume() { return _volume; }
+	uintptr_t volume() const { return _volume; }
 
 	/**
 	 * Peek at the workspace at the head of the list, which may be NULL
 	 */
-	const MM_EvacuatorWorkspace *peek() { return _head; }
+	const MM_EvacuatorWorkspace *peek() const { return _head; }
 
 	/**
 	 * Append a workspace to the list.

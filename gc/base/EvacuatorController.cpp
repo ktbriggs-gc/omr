@@ -549,61 +549,72 @@ MM_EvacuatorController::reportProgress(MM_Evacuator *worker, uintptr_t oldScanne
 	bool lastEpoch = (0 < newScannedValue) && ((sampledCopiedBytes[0] + sampledCopiedBytes[1]) == newScannedValue);
 	if ((oldEpoch < newEpoch) || lastEpoch) {
 
-		/* get current timestamp to mark start of next epoch */
-		OMRPORT_ACCESS_FROM_ENVIRONMENT(worker->getEnvironment());
-		uint64_t currentTimestamp = omrtime_hires_clock();
+		const MM_EvacuatorHistory::Epoch *currentEpoch = _history.getEpoch();
+		uintptr_t currentProgress = currentEpoch->survivorCopied + currentEpoch->tenureCopied + currentEpoch->scanned;
+		uintptr_t sampledProgress = sampledCopiedBytes[0] + sampledCopiedBytes[1] + newScannedValue;
+		if (currentProgress < sampledProgress) {
 
-		/* run around the bus sampling worklist volumes for all evacuators */
-		uintptr_t clears = 0, stalls = 0;
-		uintptr_t histogram[] = {0, 0, 0};
-		uintptr_t maxVolume = 0, minVolume = UINTPTR_MAX, totalVolume = 0;
-		uintptr_t volumeQuota = getWorkNotificationQuota(_minimumWorkspaceSize);
-		for (uintptr_t index = 0; index < _evacuatorCount; index += 1) {
-			MM_Evacuator *next = isBoundEvacuator(index) ? _evacuatorTask[index] : NULL;
-			if (NULL != next) {
-				uintptr_t volume = next->getVolumeOfWork();
-				totalVolume += volume;
-				if (volume > maxVolume) {
-					maxVolume = volume;
+			omrthread_monitor_enter(_reporterMutex);
+
+			currentEpoch = _history.getEpoch();
+			currentProgress = currentEpoch->survivorCopied + currentEpoch->tenureCopied + currentEpoch->scanned;
+			if (currentProgress < sampledProgress) {
+
+				/* get current timestamp to mark start of next epoch */
+				OMRPORT_ACCESS_FROM_ENVIRONMENT(worker->getEnvironment());
+				uint64_t currentTimestamp = omrtime_hires_clock();
+
+				/* run around the bus sampling worklist volumes for all evacuators */
+				uintptr_t clears = 0, stalls = 0;
+				uintptr_t histogram[] = {0, 0, 0};
+				uintptr_t maxVolume = 0, minVolume = UINTPTR_MAX, totalVolume = 0;
+				uintptr_t volumeQuota = getWorkNotificationQuota(_minimumWorkspaceSize);
+				for (uintptr_t index = 0; index < _evacuatorCount; index += 1) {
+					MM_Evacuator *next = isBoundEvacuator(index) ? _evacuatorTask[index] : NULL;
+					if (NULL != next) {
+						uintptr_t volume = next->getVolumeOfWork();
+						totalVolume += volume;
+						if (volume > maxVolume) {
+							maxVolume = volume;
+						}
+						if (volume < minVolume) {
+							minVolume = volume;
+						}
+						if (0 == volume) {
+							histogram[0] += 1;
+						} else if (volume < volumeQuota) {
+							histogram[1] += 1;
+						} else {
+							histogram[2] += 1;
+						}
+						clears += next->_stats->_acquireScanListCount;
+						stalls += next->_stats->_workStallCount;
+					}
 				}
-				if (volume < minVolume) {
-					minVolume = volume;
+
+				/* get next epoch record and fill it in */
+				MM_EvacuatorHistory::Epoch *epoch = _history.nextEpoch(newEpoch, lastEpoch);
+				epoch->gc = worker->getEnvironment()->_scavengerStats._gcCount;
+				epoch->epoch = newEpoch;
+				epoch->duration = omrtime_hires_delta(_history.epochStartTime(currentTimestamp), currentTimestamp, OMRPORT_TIME_DELTA_IN_MICROSECONDS);
+				epoch->survivorAllocationCeiling = _copyspaceAllocationCeiling[MM_Evacuator::survivor];
+				epoch->tenureAllocationCeiling = _copyspaceAllocationCeiling[MM_Evacuator::tenure];
+				epoch->cleared = clears;
+				epoch->stalled = stalls;
+				epoch->survivorCopied = sampledCopiedBytes[0];
+				epoch->tenureCopied = sampledCopiedBytes[1];
+				epoch->scanned = newScannedValue;
+				epoch->sumVolumeOfWork = totalVolume;
+				epoch->minVolumeOfWork = minVolume;
+				epoch->maxVolumeOfWork = maxVolume;
+				for (uintptr_t i = 0; i < 3; i += 1) {
+					epoch->volumeHistogram[i] = histogram[i];
 				}
-				if (0 == volume) {
-					histogram[0] += 1;
-				} else if (volume < volumeQuota) {
-					histogram[1] += 1;
-				} else {
-					histogram[2] += 1;
-				}
-				clears += next->_stats->_acquireScanListCount;
-				stalls += next->_stats->_workStallCount;
+				epoch->volumeQuota = volumeQuota;
 			}
+
+			omrthread_monitor_exit(_reporterMutex);
 		}
-
-		omrthread_monitor_enter(_reporterMutex);
-
-		/* get next epoch record and fill it in */
-		MM_EvacuatorHistory::Epoch *epoch = _history.nextEpoch(newEpoch, lastEpoch);
-		epoch->gc = worker->getEnvironment()->_scavengerStats._gcCount;
-		epoch->epoch = newEpoch;
-		epoch->duration = omrtime_hires_delta(_history.epochStartTime(currentTimestamp), currentTimestamp, OMRPORT_TIME_DELTA_IN_MICROSECONDS);
-		epoch->survivorAllocationCeiling = _copyspaceAllocationCeiling[MM_Evacuator::survivor];
-		epoch->tenureAllocationCeiling = _copyspaceAllocationCeiling[MM_Evacuator::tenure];
-		epoch->cleared = clears;
-		epoch->stalled = stalls;
-		epoch->survivorCopied = sampledCopiedBytes[0];
-		epoch->tenureCopied = sampledCopiedBytes[1];
-		epoch->scanned = newScannedValue;
-		epoch->sumVolumeOfWork = totalVolume;
-		epoch->minVolumeOfWork = minVolume;
-		epoch->maxVolumeOfWork = maxVolume;
-		for (uintptr_t i = 0; i < 3; i += 1) {
-			epoch->volumeHistogram[i] = histogram[i];
-		}
-		epoch->volumeQuota = volumeQuota;
-
-		omrthread_monitor_exit(_reporterMutex);
 	}
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 }
@@ -879,23 +890,25 @@ MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
 			omrtty_printf(" %llu", stats->_copy_cachesize_counts[cachesize]);
 		}
 		omrtty_printf(" %lx\n", stats->_copy_cachesize_sum);
+
 		omrtty_printf("%5lu      :  worksize;", stats->_gcCount);
 		for (uintptr_t worksize = 0; worksize < OMR_SCAVENGER_DISTANCE_BINS; worksize += 1) {
 			omrtty_printf(" %llu", stats->_work_packetsize_counts[worksize]);
 		}
-
 		omrtty_printf(" %lx\n", stats->_work_packetsize_sum);
+
 		omrtty_printf("%5lu      :     small;", stats->_gcCount);
-		for (uintptr_t smallsize = 0; smallsize <= OMR_SCAVENGER_DISTANCE_BINS; smallsize += 1) {
+		for (uintptr_t smallsize = 0; smallsize < OMR_SCAVENGER_DISTANCE_BINS; smallsize += 1) {
 			omrtty_printf(" %lu", stats->_small_object_counts[smallsize]);
 		}
-		omrtty_printf("\n");
+		omrtty_printf(" %lx\n", stats->_small_object_counts[OMR_SCAVENGER_DISTANCE_BINS]);
+
 		omrtty_printf("%5lu      :     large;", stats->_gcCount);
-		for (uintptr_t largesize = 0; largesize <= OMR_SCAVENGER_DISTANCE_BINS; largesize += 1) {
+		for (uintptr_t largesize = 0; largesize < OMR_SCAVENGER_DISTANCE_BINS; largesize += 1) {
 			omrtty_printf(" %lu", stats->_large_object_counts[largesize]);
 		}
+		omrtty_printf(" %lx\n", stats->_large_object_counts[OMR_SCAVENGER_DISTANCE_BINS]);
 
-		omrtty_printf("\n");
 		if (_extensions->isEvacuatorEnabled()) {
 			uintptr_t maxFrame = OMR_MAX(MM_Evacuator::unreachable, _extensions->evacuatorMaximumStackDepth);
 			uintptr_t sumActivations = sumStackActivations(_stackActivations, maxFrame);
@@ -924,21 +937,19 @@ MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
 
 		if (!_extensions->isEvacuatorEnabled()) {
 
-			uint64_t scavengeBytes = stats->_flipBytes + stats->_hashBytes + stats->_tenureAggregateBytes;
-			uint64_t insideBytes = (scavengeBytes > stats->_work_packetsize_sum) ? (scavengeBytes - stats->_work_packetsize_sum) : 0;
-			omrtty_printf("%5lu      :%10s; %lx 0 %lx %lx %lx %lx 0\n", stats->_gcCount, !isAborting() ? "end cycle" : "backout",
-					scavengeBytes, insideBytes, stats->_tenureAggregateBytes, stats->_flipDiscardBytes, stats->_tenureDiscardBytes);
+			uint64_t copiedBytes = stats->_flipBytes + stats->_hashBytes + stats->_tenureAggregateBytes;
+			uint64_t insideBytes = (copiedBytes > stats->_work_packetsize_sum) ? (copiedBytes - stats->_work_packetsize_sum) : 0;
+			double insideCopied = (0 < copiedBytes) ? ((double)insideBytes / (double)copiedBytes) : 1.0;
+			omrtty_printf("%5lu      :%10s; %lx 0 %0.3f %lx %lx %lx 0\n", stats->_gcCount, !isAborting() ? "end cycle" : "backout",
+					copiedBytes, insideCopied, stats->_tenureAggregateBytes, stats->_flipDiscardBytes, stats->_tenureDiscardBytes);
 
 		} else {
 
-			/* count bytes copied inside stack frames */
-			uint64_t totalCopiedBytes = stats->_cycleVolumeMetrics[0] + stats->_cycleVolumeMetrics[1];
-			double insideBytes = (0 < totalCopiedBytes) ? ((double)stats->_cycleVolumeMetrics[0] / (double)totalCopiedBytes) : 0;
-			/* total volume of material evacuated to survivor or tenure spaces */
 			uint64_t copiedBytes = _copiedBytes[MM_Evacuator::survivor] + _copiedBytes[MM_Evacuator::tenure];
-			/* evacuator copied/scanned byte counts may include bytes added on 1st generational copy and not included in scavenger byte counts */
+			uint64_t insideBytes = (copiedBytes > stats->_work_packetsize_sum) ? (copiedBytes - stats->_work_packetsize_sum) : 0;
+			double insideCopied = (0 < copiedBytes) ? ((double)insideBytes / (double)copiedBytes) : 1.0;
 			omrtty_printf("%5lu %2lu   :%10s; %lx %lx %0.3f %lx %lx %lx %lx\n", getEpoch()->gc, getEpoch()->epoch, isAborting() ? "backout" : "end cycle",
-					copiedBytes, _scannedBytes, insideBytes, _copiedBytes[MM_Evacuator::tenure], _finalDiscardedBytes, _finalFlushedBytes, _finalRecycledBytes);
+					copiedBytes, _scannedBytes, insideCopied, _copiedBytes[MM_Evacuator::tenure], _finalDiscardedBytes, _finalFlushedBytes, _finalRecycledBytes);
 			reportConditionCounts(getEpoch()->gc, getEpoch()->epoch);
 
 			Debug_MM_true((_finalDiscardedBytes + _finalFlushedBytes) == (stats->_flipDiscardBytes + stats->_tenureDiscardBytes));
@@ -957,7 +968,7 @@ MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
 						uintptr_t unscanned = (totalCopied > epoch->scanned) ? (totalCopied - epoch->scanned) : 0;
 						double copyScanRatio = (0 < epoch->scanned) ? ((double)totalCopied / (double)epoch->scanned) : 0.0;
 						double deltaCopyScanRatio = (0 < deltaScanned) ? ((double)deltaCopied / (double)deltaScanned) : 0.0;
-						omrtty_printf("%5lu %2lu  0:     epoch; %0.3f %0.3f %8lx %8lx %8lx %8lx %8lx %8lx %8.3f ", epoch->gc, epoch->epoch,
+						omrtty_printf("%5lu %2lu  0:     epoch; %6.3f %6.3f %8lx %8lx %8lx %8lx %8lx %8lx %8.3f ", epoch->gc, epoch->epoch,
 								copyScanRatio, deltaCopyScanRatio, epoch->survivorCopied, epoch->tenureCopied,	epoch->scanned, unscanned,
 								epoch->survivorAllocationCeiling, epoch->tenureAllocationCeiling,
 								((double)(epoch->duration) / 1000.0));
@@ -1008,14 +1019,14 @@ MM_EvacuatorController::reportConditionCounts(uintptr_t gc, uintptr_t epoch)
 	}
 	omrtty_printf(" %lu\n", objectCount);
 	double percent = (100.0 * (double)conditionCountTotals[0]) / (double)objectCount;
-	omrtty_printf("%10lu :%10.3f| <none>\n", conditionCountTotals[0], percent);
+	omrtty_printf("%5lu %2lu   :%10lu; %7.3f <none>\n", gc, epoch, conditionCountTotals[0], percent);
 	for (uintptr_t flags = 1; flags <= MM_Evacuator::conditions_mask; flags += 1) {
 		if (0 != conditionCountTotals[flags]) {
 			double percent = (100.0 * (double)conditionCountTotals[flags]) / (double)objectCount;
-			omrtty_printf("%10lu :%10.3f", conditionCountTotals[flags], percent);
+			omrtty_printf("%5lu %2lu   :%10lu; %7.3f", gc, epoch, conditionCountTotals[flags], percent);
 			for (uintptr_t condition = 1; condition < MM_Evacuator::conditions_mask; condition <<= 1) {
 				if (0 != (flags & condition)) {
-					omrtty_printf("| %s", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition));
+					omrtty_printf(" %s", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition));
 				}
 			}
 			omrtty_printf("\n");

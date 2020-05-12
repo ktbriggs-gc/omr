@@ -632,7 +632,7 @@ MM_Evacuator::adjustWorkReleaseThreshold()
 	}
 
 	/* promote work distribution and parallelize (cut and shed) scanning dense/recursive structures */
-	return _minWorkspaceSize;
+	return min_workspace_release;
 }
 
 void
@@ -659,7 +659,7 @@ void
 MM_Evacuator::gotWork()
 {
 	/* check work volume and send notification of work to controller if quota filled and notification pending */
-	if (hasDistributableWork(_minWorkspaceSize, _workList.volume())) {
+	if (hasDistributableWork(min_workspace_release, _workList.volume())) {
 #if defined(J9MODRON_TGC_PARALLEL_STATISTICS) || defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 		uint64_t waitStartTime = startWaitTimer("notify");
 #endif /* defined(J9MODRON_TGC_PARALLEL_STATISTICS) || defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
@@ -675,17 +675,14 @@ MM_Evacuator::gotWork()
 void
 MM_Evacuator::findWork()
 {
-	/* throttle work pipeline while aborting */
-	if (isAbortedCycle()) {
-		return;
-	}
+	Debug_MM_true(!isAbortedCycle());
 
 	/* select as prospective donor the evacuator with greatest volume of distributable work */
 	uintptr_t maxVolume = 0;
 	MM_Evacuator *maxDonor = NULL;
 	for (MM_Evacuator *next = _controller->getNextEvacuator(this); next != this; next = _controller->getNextEvacuator(next)) {
 		uintptr_t volume = next->_workList.volume();
-		if ((volume > maxVolume) && next->hasDistributableWork(_minWorkspaceSize, volume)) {
+		if ((volume > maxVolume) && next->hasDistributableWork(min_workspace_release, volume)) {
 			maxVolume = volume;
 			maxDonor = next;
 		}
@@ -701,13 +698,13 @@ MM_Evacuator::findWork()
 	do {
 
 		/* do not wait if donor is involved with its worklist */
-		if (donor->hasDistributableWork(_minWorkspaceSize, donor->_workList.volume())) {
+		if (donor->hasDistributableWork(min_workspace_release, donor->_workList.volume())) {
 
 			/* retest donor volume of work after locking its worklist */
 			if (0 == omrthread_monitor_try_enter(donor->_mutex)) {
 
 				/* pull work from donor worklist into stack and worklist until pulled volume levels up with donor remainder */
-				if (donor->hasDistributableWork(_minWorkspaceSize, donor->_workList.volume())) {
+				if (donor->hasDistributableWork(min_workspace_release, donor->_workList.volume())) {
 					pull(&donor->_workList);
 				}
 
@@ -748,81 +745,84 @@ MM_Evacuator::findWork()
 bool
 MM_Evacuator::getWork()
 {
-	Debug_MM_true((0 == _copyspace[survivor].getWhiteSize()) || (_copyspace[survivor].getWhiteSize() >= _minWorkspaceSize) || isConditionSet(copyspaceTailFillCondition(survivor)));
-	Debug_MM_true((0 == _copyspace[tenure].getWhiteSize()) || (_copyspace[tenure].getWhiteSize() >= _minWorkspaceSize) || isConditionSet(copyspaceTailFillCondition(tenure)));
+	Debug_MM_true((0 == _copyspace[survivor].getWhiteSize()) || (_copyspace[survivor].getWhiteSize() >= min_workspace_release) || isConditionSet(copyspaceTailFillCondition(survivor)));
+	Debug_MM_true((0 == _copyspace[tenure].getWhiteSize()) || (_copyspace[tenure].getWhiteSize() >= min_workspace_release) || isConditionSet(copyspaceTailFillCondition(tenure)));
 	Debug_MM_true(!hasScanWork());
 
 	/* evacuator must clear both outside copyspaces and its worklist before polling other evacuators */
-	if (!isAbortedCycle()) {
+	/* if outside copyspaces are empty and worklist is not work must be pulled from worklist regardless of quota or distribution condition */
+	uintptr_t copysize[] = { _copyspace[survivor].getCopySize(), _copyspace[tenure].getCopySize() };
 
-		/* if outside copyspaces are empty and worklist is not work must be pulled from worklist regardless of quota or distribution condition */
-		uintptr_t copysize[] = { _copyspace[survivor].getCopySize(), _copyspace[tenure].getCopySize() };
-		uintptr_t worklistVolumeQuota = (0 < (copysize[0] + copysize[1])) ? _controller->getWorkNotificationQuota(_controller->_minimumWorkspaceSize) : 0;
+	/* pull work from worklist if its aggregate volume of work exceeds work quota and volume of work in outside copyspace  */
+	uintptr_t worklistVolumeQuota = (0 == (copysize[0] + copysize[1])) ? 0 : _controller->getWorkNotificationQuota(_controller->_minimumWorkspaceSize);
+	if ((worklistVolumeQuota <= _workList.volume()) && !isAbortedCycle()) {
 
-		/* pull work from worklist if its aggregate volume of work exceeds work quota and volume of work in outside copyspace  */
-		if (_workList.volume() > worklistVolumeQuota) {
+		omrthread_monitor_enter(_mutex);
 
-			omrthread_monitor_enter(_mutex);
-
-			/* worklist volume might have been reduced while waiting on worklist mutex */
-			if (_workList.volume() > worklistVolumeQuota) {
-				/* pull workspaces from worklist into stack scanspaces */
-				pull(&_workList);
-			}
-
-			omrthread_monitor_exit(_mutex);
+		/* another evacuator may have stalled or worklist volume might have been reduced while waiting on worklist mutex */
+		if ((worklistVolumeQuota <= _workList.volume()) && !isAbortedCycle()) {
+			/* pull workspaces from worklist into stack scanspaces */
+			pull(&_workList);
 		}
 
-		if (!hasScanWork()) {
-
-			Region outside = survivor;
-			/* outside copyspace selection depends on copy size as well as tail filling and work distribution conditions */
-			if ((0 < copysize[survivor]) && (0 < copysize[tenure])) {
-				/* both outside copyspaces hold work -- try not to pull from a tail filling copyspace */
-				bool tailfill[] = { isConditionSet(copyspaceTailFillCondition(survivor)), isConditionSet(copyspaceTailFillCondition(tenure)) };
-				/* an outside copyspace is tail filling when its remaining whitespace is too small to produce a minimal workspace */
-				if (tailfill[survivor] == tailfill[tenure]) {
-					/* tail filling or not in both copyspaces -- pull work from copyspace with the most work */
-					if (copysize[survivor] < copysize[tenure]) {
-						outside = tenure;
-					}
-				} else if ((tailfill[survivor]) && (0 < copysize[tenure])) {
-					/* survivor outside copyspace is tail filling, but tenure is not and has work to pull */
-					outside = tenure;
-				}
-			} else if (0 < copysize[tenure]) {
-				/* survivor copyspace has no work, but tenure may have work to pull */
-				outside = tenure;
-			}
-
-			Debug_MM_true((copysize[outside] >= copysize[otherEvacuationRegion(outside)]) || isConditionSet(copyspaceTailFillCondition(otherEvacuationRegion(outside))));
-
-			/* if no work pulled from worklist try to pull work from selected outside copyspace */
-			if (!hasScanWork() && (0 < copysize[outside])) {
-				/* pull work from copyspace into bottom stack frame */
-				pull(&_copyspace[outside]);
-			}
-		}
-
-		/* if no work at this point the worklist and both outside copyspaces must be empty */
-		Assert_MM_true(hasScanWork() || ((_workList.volume() == 0) && (0 == copysize[survivor]) && (0 == copysize[tenure])));
+		omrthread_monitor_exit(_mutex);
 	}
 
+	if (!hasScanWork() && !isAbortedCycle()) {
+
+		Region outside = survivor;
+		/* outside copyspace selection depends on copy size as well as tail filling and work distribution conditions */
+		if ((0 < copysize[survivor]) && (0 < copysize[tenure])) {
+			/* both outside copyspaces hold work -- try not to pull from a tail filling copyspace */
+			bool tailfill[] = { isConditionSet(copyspaceTailFillCondition(survivor)), isConditionSet(copyspaceTailFillCondition(tenure)) };
+			/* an outside copyspace is tail filling when its remaining whitespace is too small to produce a minimal workspace */
+			if (tailfill[survivor] == tailfill[tenure]) {
+				/* tail filling or not in both copyspaces -- pull work from copyspace with the most work */
+				if (copysize[survivor] < copysize[tenure]) {
+					outside = tenure;
+				}
+			} else if ((tailfill[survivor]) && (0 < copysize[tenure])) {
+				/* survivor outside copyspace is tail filling, but tenure is not and has work to pull */
+				outside = tenure;
+			}
+		} else if (0 < copysize[tenure]) {
+			/* survivor copyspace has no work, but tenure may have work to pull */
+			outside = tenure;
+		}
+
+		Debug_MM_true((copysize[outside] >= copysize[otherEvacuationRegion(outside)]) || isConditionSet(copyspaceTailFillCondition(otherEvacuationRegion(outside))));
+
+		/* if no work pulled from worklist try to pull work from selected outside copyspace */
+		if (0 < copysize[outside]) {
+			/* pull work from copyspace into bottom stack frame */
+			pull(&_copyspace[outside]);
+		}
+	}
+
+	/* if no work and not aborting at this point the worklist and both outside copyspaces must be empty */
+	Assert_MM_true(hasScanWork() || ((_workList.volume() == 0) && (0 == copysize[survivor]) && (0 == copysize[tenure])) || isAbortedCycle());
+
 	/* aborting or not, if no local work available try to pull work from other evacuator worklists */
-	if (!hasScanWork()) {
+	if (!hasScanWork() || isAbortedCycle()) {
 #if defined(J9MODRON_TGC_PARALLEL_STATISTICS) || defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 		uint64_t waitStartTime = startWaitTimer("stall");
 #endif /* defined(J9MODRON_TGC_PARALLEL_STATISTICS) || defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+
+		/* clear the stack in case work was pulled above while another evacuator aborted */
+		_scanStackFrame = NULL;
 
 		/* flush local buffers and scanned/copied byte counters before acquiring controller */
 		flushForWaitState();
 		_controller->reportProgress(this, _copiedBytesDelta, &_scannedBytesDelta);
 		_controller->acquireController();
 
+		/* poll other evacuators and try to pull workspaces into stack from evacuator with greatest worklist volume */
 		do {
-			/* poll other evacuators and try to pull workspaces into stack from evacuator with greatest worklist volume */
-			findWork();
-			/* if no work pulled wait for another evacuator to notify of work or notify all to complete heap scan */
+			/* throttle work pipeline while aborting */
+			if (!isAbortedCycle()) {
+				findWork();
+			}
+			/* if no work pulled wait for another evacuator to notify of work or notify all to complete or abort heap scan */
 		} while (_controller->isWaitingForWork(this));
 
 		/* continue scanning received work, or complete heap scan if stack is empty */
@@ -831,13 +831,14 @@ MM_Evacuator::getWork()
 #if defined(J9MODRON_TGC_PARALLEL_STATISTICS) || defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 		endWaitTimer(waitStartTime);
 #endif /* defined(J9MODRON_TGC_PARALLEL_STATISTICS) || defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+
+		/* empty stack at this point means all evacuators have completed (or aborted) heap scan */
+		if (!hasScanWork()) {
+			scanComplete();
+		}
 	}
 
-	/* empty stack at this point means all evacuators have completed (or aborted) heap scan */
-	if (!hasScanWork()) {
-		scanComplete();
-	}
-
+	/* it may be that this evacuator has work and controller has received abort from another evacuator -- that's ok :) */
 	return hasScanWork();
 }
 
@@ -891,7 +892,7 @@ MM_Evacuator::pull(MM_EvacuatorCopyspace *copyspace)
 	_scanStackFrame->pullWork(copyspace);
 
 	/* trim copyspace if not enough whitespace to build a viable workspace */
-	if (copyspace->getWhiteSize() < _minWorkspaceSize) {
+	if (copyspace->getWhiteSize() < min_workspace_release) {
 
 		/* trim remainder whitespace to whitelist */
 		_whiteList[getEvacuationRegion(copyspace->getBase())].add(copyspace->trim());
@@ -949,6 +950,7 @@ MM_Evacuator::pull(MM_EvacuatorWorklist *worklist)
 	for (MM_EvacuatorWorkspace *workspace = stacklist; NULL != workspace; workspace = _freeList.add(workspace)) {
 
 		/* set workspace into scanspace in next stack frame */
+		uintptr_t arrayHeaderSize = 0;
 		_scanStackFrame = hasScanWork() ? (_scanStackFrame + 1) : _stackBottom;
 		if (isSplitArrayWorkspace(workspace)) {
 
@@ -965,11 +967,16 @@ MM_Evacuator::pull(MM_EvacuatorWorklist *worklist)
 			_delegate.getSplitPointerArrayObjectScanner(workspace->base, scanner, startSlot, stopSlot, GC_ObjectScanner::scanHeap);
 			_scanStackFrame->setSplitArrayScanspace(arrayHead, arrayEnd, startSlot, stopSlot);
 
+			if (scanner->isHeadObjectScanner()) {
+				uintptr_t arrayBytes = getReferenceSlotSize() * ((GC_IndexableObjectScanner *)scanner)->getIndexableRange();
+				arrayHeaderSize = _scanStackFrame->getSize() - arrayBytes;
+			}
 		} else {
 
 			/* set scanscape: base = scan = workspace base, copy = limit = end = base + workspace volume */
 			_scanStackFrame->setScanspace((uint8_t *)workspace->base, (uint8_t *)workspace->base + workspace->length, workspace->length);
 		}
+		_stats->countWorkPacketSize((arrayHeaderSize + _workList.volume(workspace)), _controller->_maximumWorkspaceSize);
 	}
 
 	/* At this point the stack must not be empty, total work volume pulled from worklist
@@ -978,7 +985,6 @@ MM_Evacuator::pull(MM_EvacuatorWorklist *worklist)
 	 * will be empty if it had only one workspace and it was pulled to stack or worklist. */
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-	_stats->countWorkPacketSize(pulledVolume, _controller->_maximumWorkspaceSize);
 	Debug_MM_true((pulledVolume <= worklist->volume() || (_scanStackFrame == _stackBottom)));
 	Debug_MM_true((_stackBottom <= _scanStackFrame) && (_scanStackFrame < (_stackTop - 2)));
 	uintptr_t stackVolume = 0;
@@ -998,8 +1004,8 @@ MM_Evacuator::scan()
 	Debug_MM_true(NULL != _whiteStackFrame[survivor]);
 	Debug_MM_true(NULL != _whiteStackFrame[tenure]);
 
-	/* scan stack until empty */
-	while (hasScanWork()) {
+	/* scan stack until empty or cycle is aborted */
+	while (hasScanWork() && !isAbortedCycle()) {
 		Debug_MM_true((_stackLimit == _stackCeiling) || (_stackLimit == _stackBottom));
 		Debug_MM_true((_scanStackFrame < _stackLimit) || (_stackLimit == _stackBottom));
 		Debug_MM_true(_scanStackFrame >= _stackBottom);
@@ -1134,11 +1140,9 @@ MM_Evacuator::copy()
 					const uintptr_t whiteStackFrameRemainder = _whiteStackFrame[region]->getWhiteSize();
 
 					/* copy flush overflow and large objects outside,  copy small objects inside the stack ... */
-					if (!shouldCopyOutside(region) && (sizeLimit > slotObjectSizeAfterCopy) &&
-						/* ... if sufficient whitespace remaining ... */
-						((whiteStackFrameRemainder >= slotObjectSizeAfterCopy) ||
-							/* ... or can be refreshed in a superior (next) stack frame */
-							reserveInsideScanspace(region, slotObjectSizeAfterCopy))
+					if ((sizeLimit > slotObjectSizeAfterCopy) && !isForceOutsideCopyCondition(region) &&
+						/* ... if sufficient whitespace remaining or can be refreshed in a superior (next) stack frame */
+						((whiteStackFrameRemainder >= slotObjectSizeAfterCopy) || reserveInsideScanspace(region, slotObjectSizeAfterCopy))
 					) {
 						/* space for copy reserved in white stack frame -- this may or may not be the current scan frame */
 						MM_EvacuatorScanspace * const whiteFrame = _whiteStackFrame[region];
@@ -1203,7 +1207,7 @@ MM_Evacuator::copy()
 			slotObject = objectScanner->getNextSlot();
 		}
 
-		/* advance scan head and set scanner for next object or set NULL scanner to pop at end of scanscape */
+		/* advance scan head and set scanner for next object or set NULL scanner to pop at end of scanspace */
 		objectScanner = scanner(true);
 	}
 
@@ -1211,23 +1215,6 @@ MM_Evacuator::copy()
 
 	/* pop scan stack */
 	pop();
-}
-
-bool
-MM_Evacuator::shouldCopyOutside(const Region region)
-{
-	Debug_MM_true((_stackLimit == _stackBottom) || (_stackLimit == _stackCeiling));
-	
-	/* synchronize stall condition with controller */
-	setCondition(stall, _controller->areAnyEvacuatorsStalled());
-
-	/* synchronize stack limit with outside copy conditions */
-	_stackLimit = isForceOutsideCopyCondition(region) ? _stackBottom : _stackCeiling;
-
-	/* synchronize workspace release threshold with scanning stage and work distribution conditions */
-	_workspaceReleaseThreshold = adjustWorkReleaseThreshold();
-
-	return (_stackLimit == _stackBottom);
 }
 
 omrobjectptr_t
@@ -1286,7 +1273,7 @@ MM_Evacuator::copyOutside(Region region, MM_ForwardedHeader *forwardedHeader, fo
 			} else if (effectiveCopyspace != _whiteStackFrame[region]->asCopyspace()) {
 
 				/* copied to outside copyspace, release work only if remaining whitespace can hold a minimal workspace */
-				if (effectiveCopyspace->getWhiteSize() >= _minWorkspaceSize) {
+				if (effectiveCopyspace->getWhiteSize() >= min_workspace_release) {
 
 					/*  release a workspace when work volume hits threshold */
 					if (effectiveCopyspace->getCopySize() >= _workspaceReleaseThreshold) {
@@ -1333,6 +1320,8 @@ MM_Evacuator::copyForward(MM_ForwardedHeader *forwardedHeader, fomrobject_t *ref
 	/* try to set forwarding address to the copy head in copyspace; otherwise do not copy, just return address forwarded by another thread */
 	omrobjectptr_t forwardedAddress = forwardedHeader->setForwardedObject(copyHead);
 	if (forwardedAddress == copyHead) {
+		Region region = getEvacuationRegion(forwardedAddress);
+
 #if defined(OMR_VALGRIND_MEMCHECK)
 		valgrindMempoolAlloc(_env->getExtensions(), (uintptr_t)forwardedAddress, forwardedLength);
 #endif /* defined(OMR_VALGRIND_MEMCHECK) */
@@ -1342,6 +1331,20 @@ MM_Evacuator::copyForward(MM_ForwardedHeader *forwardedHeader, fomrobject_t *ref
 
 		/* forwarding address set by this thread -- object will be evacuated to the copy head in copyspace */
 		memcpy(forwardedAddress, forwardedHeader->getObject(), originalLength);
+
+		/* advance the copy head in the receiving copyspace and track scan/copy progress */
+		copyspace->advanceCopyHead(forwardedLength);
+
+		/* synchronize stall condition with controller */
+		if (isConditionSet(stall) ^ _controller->areAnyEvacuatorsStalled()) {
+			setCondition(stall, !isConditionSet(stall));
+		}
+
+		/* update copy volume metrics for tracking distribution of work and reporting scan/copy progress */
+		_stackVolumeMetrics[(copyspace == _whiteStackFrame[region]->asCopyspace()) ? inside : outside] += forwardedLength;
+		if ((_copiedBytesDelta[survivor] + _copiedBytesDelta[tenure]) >= _copiedBytesReportingDelta) {
+			_controller->reportProgress(this, _copiedBytesDelta, &_scannedBytesDelta);
+		}
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 		Debug_MM_true(!isConditionSet(breadth_first_roots) || !isConditionSet(recursive_object));
@@ -1371,19 +1374,6 @@ MM_Evacuator::copyForward(MM_ForwardedHeader *forwardedHeader, fomrobject_t *ref
 			_stats->getFlipHistory(0)->_flipBytes[objectAge + 1] += forwardedLength;
 			_copiedBytesDelta[survivor] += forwardedLength;
 		}
-
-		/* advance the copy head in the receiving copyspace and track scan/copy progress */
-		copyspace->advanceCopyHead(forwardedLength);
-
-		/* update region copy volume delta for reporting scan/copy progress */
-		Region region = getEvacuationRegion(forwardedAddress);
-		if ((_copiedBytesDelta[survivor] + _copiedBytesDelta[tenure]) >= _copiedBytesReportingDelta) {
-			_controller->reportProgress(this, _copiedBytesDelta, &_scannedBytesDelta);
-		}
-
-		/* update stack volume metric for tracking distribution of work */
-		StackVolumeMetric metric = (copyspace == _whiteStackFrame[region]->asCopyspace()) ? inside : outside;
-		_stackVolumeMetrics[metric] += forwardedLength;
 
 		/* update object age and finalize copied object header */
 		if (tenure == region) {
@@ -1564,7 +1554,7 @@ MM_Evacuator::refreshInsideWhitespace(const Region region, const uintptr_t slotO
 		}
 
 		/* try to allocate from whitelist if top is large enough to bother with and will hold object */
-		if (_whiteList[region].top() >= OMR_MAX(slotObjectSizeAfterCopy, _minWorkspaceSize)) {
+		if (_whiteList[region].top() >= OMR_MAX(slotObjectSizeAfterCopy, min_workspace_release)) {
 
 			/* this is whitespace from unused large object reservations or the tails of trimmed copyspaces*/
 			whitespace = _whiteList[region].top(slotObjectSizeAfterCopy);
@@ -1805,7 +1795,7 @@ MM_Evacuator::reserveOutsideCopyspace(Region *region, const uintptr_t slotObject
 }
 
 bool
-MM_Evacuator::shouldRefreshCopyspace(const Region region, const uintptr_t slotObjectSizeAfterCopy, const uintptr_t copyspaceRemainder)
+MM_Evacuator::shouldRefreshCopyspace(const Region region, const uintptr_t slotObjectSizeAfterCopy, const uintptr_t copyspaceRemainder) const
 {
 	/* do not refresh outside copyspace for huge objects -- these are always directed to large object copyspace */
 	if (!isHugeObject(slotObjectSizeAfterCopy)) {
@@ -1824,7 +1814,7 @@ MM_Evacuator::shouldRefreshCopyspace(const Region region, const uintptr_t slotOb
 		}
 
 		/* refresh when a large volume of copy has overflowed the copyspace */
-		if (_copyspaceOverflow[region] > (_minWorkspaceSize * MM_EvacuatorBase::max_copyspace_overflow_quanta)) {
+		if (_copyspaceOverflow[region] > (min_workspace_release * MM_EvacuatorBase::max_copyspace_overflow_quanta)) {
 
 			/* this will turn outside copyspace overflow flushing off */
 			return true;
@@ -1835,14 +1825,14 @@ MM_Evacuator::shouldRefreshCopyspace(const Region region, const uintptr_t slotOb
 }
 
 bool
-MM_Evacuator::isLargeObject(const uintptr_t objectSizeInBytes)
+MM_Evacuator::isLargeObject(const uintptr_t objectSizeInBytes) const
 {
 	/* any object that might be a splitable pointer array is a very large object */
 	return (MM_EvacuatorBase::min_split_indexable_size <= objectSizeInBytes);
 }
 
 bool
-MM_Evacuator::isHugeObject(const uintptr_t objectSizeInBytes)
+MM_Evacuator::isHugeObject(const uintptr_t objectSizeInBytes) const
 {
 	/* any object that can't fit in a maximal copyspace is a huge object */
 	return (_controller->_maximumCopyspaceSize < objectSizeInBytes);
@@ -1904,7 +1894,7 @@ MM_Evacuator::splitPointerArrayWork(omrobjectptr_t pointerArray)
 }
 
 bool
-MM_Evacuator::isSplitArrayWorkspace(const MM_EvacuatorWorkspace *work)
+MM_Evacuator::isSplitArrayWorkspace(const MM_EvacuatorWorkspace *work) const
 {
 	/* offset in workspace is >0 only for split array workspaces (segment starts at array[offset-1]) */
 	return (0 < work->offset);
@@ -2009,7 +1999,7 @@ MM_Evacuator::flushForWaitState()
 }
 
 bool
-MM_Evacuator::isNurseryAge(uintptr_t objectAge)
+MM_Evacuator::isNurseryAge(uintptr_t objectAge) const
 {
 	/* return true if age selected by collector's tenure mask */
 	return (0 == (((uintptr_t)1 << objectAge) & _tenureMask));
@@ -2024,31 +2014,48 @@ MM_Evacuator::setCondition(MM_Evacuator::ConditionFlag condition, bool value)
 	} else {
 		_conditionFlags &= ~(uintptr_t)condition;
 	}
+
+	/* synchronize stack limit with outside copy conditions */
+	if (isForceOutsideCopyCondition() ^ (_stackLimit == _stackBottom)) {
+		_stackLimit = isForceOutsideCopyCondition() ? _stackBottom : _stackCeiling;
+	}
+
+	/* synchronize workspace release threshold with scanning stage and work distribution conditions */
+	if (isDistributeWorkCondition() ^ (min_workspace_release == _workspaceReleaseThreshold)) {
+		_workspaceReleaseThreshold = adjustWorkReleaseThreshold();
+	}
 }
 
 bool
-MM_Evacuator::isBreadthFirstCondition()
+MM_Evacuator::isBreadthFirstCondition() const
 {
 	/* this tests conditions that force breadth first stack operation  */
 	return (isConditionSet(breadth_first_always | breadth_first_roots));
 }
 
 bool
-MM_Evacuator::isDistributeWorkCondition()
+MM_Evacuator::isDistributeWorkCondition() const
 {
 	/* test conditions that force small workspace release and promote distribution of work to other evacuators */
 	return isConditionSet(stack_overflow | depth_first | recursive_object | stall | breadth_first_roots);
 }
 
 bool
-MM_Evacuator::isForceOutsideCopyCondition(MM_Evacuator::Region region)
+MM_Evacuator::isForceOutsideCopyCondition() const
 {
 	/* test stack overflow and copyspace tail filling conditions, which force all objects to be copied outside */
-	return (isConditionSet(stack_overflow | recursive_object | stall | copyspaceTailFillCondition(region)));
+	return (isConditionSet(breadth_first_always | breadth_first_roots | stack_overflow | recursive_object | stall));
+}
+
+bool
+MM_Evacuator::isForceOutsideCopyCondition(MM_Evacuator::Region region) const
+{
+	/* test stack overflow and copyspace tail filling conditions, which force all objects to be copied outside */
+	return (isConditionSet(copyspaceTailFillCondition(region) | breadth_first_always | breadth_first_roots | stack_overflow | recursive_object | stall));
 }
 
 MM_Evacuator::ConditionFlag
-MM_Evacuator::copyspaceTailFillCondition(MM_Evacuator::Region region)
+MM_Evacuator::copyspaceTailFillCondition(MM_Evacuator::Region region) const
 {
 	/* return copyspace overflow condition for the specific region */
 	return (ConditionFlag)((uintptr_t)survivor_tail_fill << region);
@@ -2096,8 +2103,8 @@ bool
 MM_Evacuator::isAbortedCycle()
 {
 	/* also check with controller in case other evacuator has signaled abort */
-	if (!_abortedCycle) {
-		_abortedCycle = _controller->isAborting();
+	if (!_abortedCycle && _controller->isAborting()) {
+		_abortedCycle = true;
 	}
 
 	return _abortedCycle;

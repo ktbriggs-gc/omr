@@ -508,9 +508,11 @@ MM_Scavenger::scavenge(MM_EnvironmentBase *envBase)
 #if defined(EVACUATOR_DEBUG)
 		if (_debugger.isDebugEnd()) {
 #endif /* defined(EVACUATOR_DEBUG) */
-			omrtty_printf("%5lu  0   :  gc start; survivor{%lx %lx} tenure{%lx %lx} evacuate{%lx %lx} projection:%lx\n", _extensions->scavengerStats._gcCount,
-					(uintptr_t)_survivorSpaceBase, (uintptr_t)_survivorSpaceTop, (uintptr_t)_extensions->_tenureBase, (uintptr_t)_extensions->_tenureBase + _extensions->_tenureSize,
-					(uintptr_t)_evacuateSpaceBase, (uintptr_t)_evacuateSpaceTop, (uintptr_t)_survivorSpaceTop - (uintptr_t)_survivorSpaceBase);
+			if (!_extensions->isEvacuatorEnabled()) {
+				omrtty_printf("%5lu  0   :  gc start; survivor{%lx %lx} tenure{%lx %lx} evacuate{%lx %lx} projection:%lx\n", _extensions->scavengerStats._gcCount,
+						(uintptr_t)_survivorSpaceBase, (uintptr_t)_survivorSpaceTop, (uintptr_t)_extensions->_tenureBase, (uintptr_t)_extensions->_tenureBase + _extensions->_tenureSize,
+						(uintptr_t)_evacuateSpaceBase, (uintptr_t)_evacuateSpaceTop, (uintptr_t)_survivorSpaceTop - (uintptr_t)_survivorSpaceBase);
+			}
 #if defined(EVACUATOR_DEBUG)
 		}
 #endif /* defined(EVACUATOR_DEBUG) */
