@@ -5828,68 +5828,28 @@ OMR::Z::TreeEvaluator::aloadEvaluator(TR::Node * node, TR::CodeGenerator * cg)
 TR::Register *
 OMR::Z::TreeEvaluator::aiaddEvaluator(TR::Node * node, TR::CodeGenerator * cg)
    {
-   TR::Register * targetRegister = cg->allocateRegister();
-   TR::Node * firstChild = node->getFirstChild();
-   TR::MemoryReference * aiaddMR = generateS390MemoryReference(cg);
-   TR::Compilation *comp = cg->comp();
-
-   aiaddMR->populateAddTree(node, cg);
-   aiaddMR->eliminateNegativeDisplacement(node, cg);
-   aiaddMR->enforceDisplacementLimit(node, cg, NULL);
-
-   if (node->getOpCodeValue() == TR::aiadd && node->isInternalPointer())
-      {
-      if (node->getPinningArrayPointer())
-         {
-         targetRegister->setContainsInternalPointer();
-         targetRegister->setPinningArrayPointer(node->getPinningArrayPointer());
-         }
-      else if (firstChild->getOpCodeValue() == TR::aload &&
-         firstChild->getSymbolReference()->getSymbol()->isAuto() &&
-         firstChild->getSymbolReference()->getSymbol()->isPinningArrayPointer())
-         {
-         targetRegister->setContainsInternalPointer();
-         if (!firstChild->getSymbolReference()->getSymbol()->isInternalPointer())
-            {
-            targetRegister->setPinningArrayPointer(firstChild->getSymbolReference()->getSymbol()->castToAutoSymbol());
-            }
-         else
-            {
-            targetRegister->setPinningArrayPointer(firstChild->getSymbolReference()->getSymbol()->castToInternalPointerAutoSymbol()->getPinningArrayPointer());
-            }
-         }
-      else if (firstChild->getRegister() != NULL && firstChild->getRegister()->containsInternalPointer())
-         {
-         targetRegister->setContainsInternalPointer();
-         targetRegister->setPinningArrayPointer(firstChild->getRegister()->getPinningArrayPointer());
-         }
-      }
-
-   generateRXInstruction(cg, TR::InstOpCode::LA, node, targetRegister, aiaddMR);
-   node->setRegister(targetRegister);
-
-   return targetRegister;
+   return OMR::Z::TreeEvaluator::axaddEvaluator(node, cg);
    }
 
-/**
- * Handles TR_Aladd on 64-bit
- */
 TR::Register *
 OMR::Z::TreeEvaluator::aladdEvaluator(TR::Node * node, TR::CodeGenerator * cg)
    {
+   return OMR::Z::TreeEvaluator::axaddEvaluator(node, cg);
+   }
+
+TR::Register *
+OMR::Z::TreeEvaluator::axaddEvaluator(TR::Node * node, TR::CodeGenerator * cg)
+   {
    TR::Compilation *comp = cg->comp();
-   TR_ASSERT(cg->comp()->target().is64Bit(), "aladd should not be seen on 32-bit");
-
    TR::Register * targetRegister = cg->allocateRegister();
-
    TR::Node * firstChild = node->getFirstChild();
-   TR::MemoryReference * aladdMR = generateS390MemoryReference(cg);
+   TR::MemoryReference * axaddMR = generateS390MemoryReference(cg);
 
-   aladdMR->populateAddTree(node, cg);
-   aladdMR->eliminateNegativeDisplacement(node, cg);
-   aladdMR->enforceDisplacementLimit(node, cg, NULL);
+   axaddMR->populateAddTree(node, cg);
+   axaddMR->eliminateNegativeDisplacement(node, cg);
+   axaddMR->enforceDisplacementLimit(node, cg, NULL);
 
-   if (node->getOpCodeValue() == TR::aladd && node->isInternalPointer())
+   if (node->isInternalPointer())
       {
       if (node->getPinningArrayPointer())
          {
@@ -5917,7 +5877,7 @@ OMR::Z::TreeEvaluator::aladdEvaluator(TR::Node * node, TR::CodeGenerator * cg)
          }
       }
 
-   generateRXInstruction(cg, TR::InstOpCode::LA, node, targetRegister, aladdMR);
+   generateRXInstruction(cg, TR::InstOpCode::LA, node, targetRegister, axaddMR);
    node->setRegister(targetRegister);
 
    return targetRegister;
@@ -10292,9 +10252,9 @@ OMR::Z::TreeEvaluator::arraytranslateAndTestEvaluator(TR::Node * node, TR::CodeG
          // Index into helper table - Each entry in table is 16 bytes.
          //   Actual index to helper table is the remaining length (8-byte) * 16.
          if (cg->comp()->target().is64Bit())
-            generateShiftAndKeepSelected64Bit(node, cg, tmpReg, tmpReg, 52, 59, 4, true, false);
+            generateShiftThenKeepSelected64Bit(node, cg, tmpReg, tmpReg, 52, 59, 4);
          else
-            generateShiftAndKeepSelected31Bit(node, cg, tmpReg, tmpReg, 20, 27, 4, true, false);
+            generateShiftThenKeepSelected31Bit(node, cg, tmpReg, tmpReg, 20, 27, 4);
 
          // Helper table address is stored in raReg.  Branch to helper to execute TRT and return.
          TR::MemoryReference * targetMR = new (cg->trHeapMemory()) TR::MemoryReference(raReg, tmpReg, 0, cg);
@@ -11218,7 +11178,7 @@ OMR::Z::TreeEvaluator::arraysetEvaluator(TR::Node * node, TR::CodeGenerator * cg
             case 3:
                {
                TR::Register *tmpByteConstReg = cg->allocateRegister();
-               generateShiftAndKeepSelected31Bit(node, cg, tmpByteConstReg, tmpConstExprRegister, 24, 31, -8, true, false);
+               generateShiftThenKeepSelected31Bit(node, cg, tmpByteConstReg, tmpConstExprRegister, 24, 31, -8);
                generateRSInstruction(cg, TR::InstOpCode::SRL, node, tmpConstExprRegister, 16); //0x0000aabb
                generateRXInstruction(cg, TR::InstOpCode::STH, node, tmpConstExprRegister, new (cg->trHeapMemory()) TR::MemoryReference(baseReg, indexReg, offset, cg));
                offset += 2;
@@ -12185,12 +12145,12 @@ OMR::Z::TreeEvaluator::bitpermuteEvaluator(TR::Node *node, TR::CodeGenerator *cg
             // This will generate a RISBG instruction (if it's supported, otherwise two shift instructions).
             // A RISBG instruction is equivalent to doing a `(tmpReg & 0x1) << x`. But for a 64-bit value we would have to use
             // two AND immediate instructions and a shift instruction to do this. So instead we use a single RISBG instruction.
-            generateShiftAndKeepSelected64Bit(node, cg, tmpReg, tmpReg, 63 - x, 63 - x, x, true, false);
+            generateShiftThenKeepSelected64Bit(node, cg, tmpReg, tmpReg, 63 - x, 63 - x, x);
             }
          else
             {
             // Same as above, but generate a RISBLG instead of RISBG for 32, 16, and 8-bit integers
-            generateShiftAndKeepSelected31Bit(node, cg, tmpReg, tmpReg, 31 - x, 31 - x, x, true, false);
+            generateShiftThenKeepSelected31Bit(node, cg, tmpReg, tmpReg, 31 - x, 31 - x, x);
             }
 
          // Now OR the result into the resultReg
@@ -12297,7 +12257,7 @@ OMR::Z::TreeEvaluator::bitpermuteEvaluator(TR::Node *node, TR::CodeGenerator *cg
          // This will generate a RISBG instruction (if supported).
          // This is equivalent to doing a `tmpReg & 0x1`. But on 64-bit we would have to use
          // two AND immediate instructions. So instead we use a single RISBG instruction.
-         generateShiftAndKeepSelected64Bit(node, cg, tmpReg, tmpReg, 63, 63, 0, true, false);
+         generateShiftThenKeepSelected64Bit(node, cg, tmpReg, tmpReg, 63, 63, 0);
          }
       else
          {
@@ -16612,8 +16572,6 @@ OMR::Z::TreeEvaluator::vconstEvaluator(TR::Node *node, TR::CodeGenerator *cg)
    generateLoadLiteralPoolAddress(cg, node, litReg);
    size_t offset = node->getLiteralPoolOffset();
    TR::Compilation *comp = cg->comp();
-   if(comp->getOption(TR_TraceCGEvaluation))
-      traceMsg(comp, "vconst codegen, offset=%i\n", offset);
    TR::Register *vecReg = cg->allocateRegister(TR_VRF);
    generateVRXInstruction(cg, TR::InstOpCode::VL, node, vecReg, generateS390MemoryReference(litReg, offset, cg), 0);
    cg->stopUsingRegister(litReg);
