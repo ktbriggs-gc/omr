@@ -1137,48 +1137,65 @@ MM_Evacuator::copy()
 					uintptr_t slotObjectSizeBeforeCopy = 0, slotObjectSizeAfterCopy = 0, hotFieldAlignmentDescriptor = 0;
 					_objectModel->calculateObjectDetailsForCopy(_env, &forwardedHeader, &slotObjectSizeBeforeCopy, &slotObjectSizeAfterCopy, &hotFieldAlignmentDescriptor);
 					const Region region = isNurseryAge(_objectModel->getPreservedAge(&forwardedHeader)) ? survivor : tenure;
-					const uintptr_t whiteStackFrameRemainder = _whiteStackFrame[region]->getWhiteSize();
+					MM_EvacuatorScanspace * const whiteFrame = _whiteStackFrame[region];
 
 					/* copy flush overflow and large objects outside,  copy small objects inside the stack ... */
-					if ((sizeLimit > slotObjectSizeAfterCopy) && !isForceOutsideCopyCondition(region) &&
-						/* ... if sufficient whitespace remaining or can be refreshed in a superior (next) stack frame */
-						((whiteStackFrameRemainder >= slotObjectSizeAfterCopy) || reserveInsideScanspace(region, slotObjectSizeAfterCopy))
-					) {
-						/* space for copy reserved in white stack frame -- this may or may not be the current scan frame */
-						MM_EvacuatorScanspace * const whiteFrame = _whiteStackFrame[region];
-						uint8_t * const copyHead = whiteFrame->getCopyHead();
+					if ((sizeLimit > slotObjectSizeAfterCopy) && !isForceOutsideCopyCondition(region)) {
+
+						/* ... if sufficient whitespace remaining for region or can be refreshed in a superior (next) stack frame */
+						if ((whiteFrame->getWhiteSize() < slotObjectSizeAfterCopy) && !reserveInsideScanspace(region, slotObjectSizeAfterCopy)) {
+							goto outside;
+						}
 
 						/* copy/forward inside white stack frame and test for copy completion at preset copy head */
-						forwardedAddress = copyForward(&forwardedHeader, slotObject->readAddressFromSlot(), whiteFrame, slotObjectSizeBeforeCopy, slotObjectSizeAfterCopy);
+						uint8_t * const copyHead = _whiteStackFrame[region]->getCopyHead();
+						forwardedAddress = copyForward(&forwardedHeader, slotObject->readAddressFromSlot(), _whiteStackFrame[region], slotObjectSizeBeforeCopy, slotObjectSizeAfterCopy);
 						if ((uint8_t *)forwardedAddress == copyHead) {
 
-							/* if object was copied past copy limit or into a superior frame a push may be necessary */
-							if (((whiteFrame == stackFrame) && (copyHead > frameLimit)) || (whiteFrame > stackFrame)) {
+							if (_whiteStackFrame[region] == stackFrame) {
 
-								/* find nearest superior frame that can receive whitespace for evacuation region */
-								MM_EvacuatorScanspace * const nextFrame =  next(stackFrame + 1, region);
+								/* object was copied past copy limit in active stack frame and should be pushed if possible */
+								if (copyHead > frameLimit) {
 
-								/* if no next frame just obviate push and scan it in current frame */
-								if (NULL != nextFrame) {
+									/* try to find nearest superior frame that can receive whitespace for evacuation region */
+									MM_EvacuatorScanspace * const nextFrame =  next(stackFrame + 1, region);
+									if (NULL != nextFrame) {
 
-									/* the next frame is often the white frame (sitting above current frame after popping) */
-									if (nextFrame != whiteFrame) {
 										/* pull copy and remaining whitespace up into next frame */
-										nextFrame->pullTail(whiteFrame, copyHead);
+										nextFrame->pullTail(stackFrame, copyHead);
+										/* set next frame as white frame for evacuation region */
+										_whiteStackFrame[region] = nextFrame;
+
+										/* push to next frame */
+										push(nextFrame);
+									}
+								}
+
+							} else if (_whiteStackFrame[region] > stackFrame) {
+
+								/* object was copied into a superior frame and must be pushed */
+								if (_whiteStackFrame[region] == whiteFrame) {
+
+									/* if white frame is hanging some distance up the stack try to pull it closer to active frame */
+									MM_EvacuatorScanspace * const nextFrame =  next(stackFrame + 1, region);
+									if ((NULL != nextFrame) && (nextFrame < whiteFrame)) {
+
+										/* pull copy and remaining whitespace down into next frame */
+										nextFrame->pullTail(_whiteStackFrame[region], copyHead);
 										/* set next frame as white frame for evacuation region */
 										_whiteStackFrame[region] = nextFrame;
 									}
-
-									/* push to next frame */
-									push(nextFrame);
 								}
+
+								/* push to next frame */
+								push(_whiteStackFrame[region]);
 							}
 						}
 
 					} else {
 
 						/* try outside copyspace if not copied inside stack -- it may redirect into a stack frame and push */
-						forwardedAddress = copyOutside(region, &forwardedHeader, slotObject->readAddressFromSlot(), slotObjectSizeBeforeCopy, slotObjectSizeAfterCopy);
+outside:				forwardedAddress = copyOutside(region, &forwardedHeader, slotObject->readAddressFromSlot(), slotObjectSizeBeforeCopy, slotObjectSizeAfterCopy);
 					}
 
 				} else {
