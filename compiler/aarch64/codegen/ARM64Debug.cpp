@@ -600,6 +600,9 @@ TR_Debug::print(TR::FILE *pOutFile, TR::Instruction *instr)
       case OMR::Instruction::IsMemSrc1:
          print(pOutFile, (TR::ARM64MemSrc1Instruction *)instr);
          break;
+      case OMR::Instruction::IsMemSrc2:
+         print(pOutFile, (TR::ARM64MemSrc2Instruction *)instr);
+         break;
       case OMR::Instruction::IsTrg1MemSrc1:
          print(pOutFile, (TR::ARM64Trg1MemSrc1Instruction *)instr);
          break;
@@ -1198,6 +1201,20 @@ TR_Debug::print(TR::FILE *pOutFile, TR::ARM64MemSrc1Instruction *instr)
    }
 
 void
+TR_Debug::print(TR::FILE *pOutFile, TR::ARM64MemSrc2Instruction *instr)
+   {
+   printPrefix(pOutFile, instr);
+   trfprintf(pOutFile, "%s \t", getOpCodeName(&instr->getOpCode()));
+
+   print(pOutFile, instr->getSource1Register(), TR_WordReg); trfprintf(pOutFile, ", ");
+   print(pOutFile, instr->getSource2Register(), TR_WordReg); trfprintf(pOutFile, ", ");
+   print(pOutFile, instr->getMemoryReference());
+
+   printMemoryReferenceComment(pOutFile, instr->getMemoryReference());
+   trfflush(_comp->getOutFile());
+   }
+
+void
 TR_Debug::print(TR::FILE *pOutFile, TR::ARM64Trg1MemSrc1Instruction *instr)
    {
    printPrefix(pOutFile, instr);
@@ -1306,6 +1323,7 @@ getRegisterName(TR::RealRegister::RegNum num, bool is64bit)
    {
    switch (num)
       {
+      case TR::RealRegister::NoReg: return "NoReg";
       case TR::RealRegister::x0: return (is64bit ? "x0" : "w0");
       case TR::RealRegister::x1: return (is64bit ? "x1" : "w1");
       case TR::RealRegister::x2: return (is64bit ? "x2" : "w2");
@@ -1432,6 +1450,9 @@ TR_Debug::getNamea64(TR::Snippet * snippet)
       case TR::Snippet::IsMonitorExit:
          return "MonitorExit Dec Counter";
          break;
+      case TR::Snippet::IsHeapAlloc:
+         return "Heap Alloc Snippet";
+         break;
       default:
          return "<unknown snippet>";
       }
@@ -1479,6 +1500,7 @@ TR_Debug::printa64(TR::FILE *pOutFile, TR::Snippet * snippet)
 
       case TR::Snippet::IsMonitorExit:
       case TR::Snippet::IsMonitorEnter:
+      case TR::Snippet::IsHeapAlloc:
          snippet->print(pOutFile, this);
          break;
       default:

@@ -201,7 +201,6 @@ namespace TR { class PPCHelperCallSnippet; }
 namespace TR { class PPCMonitorEnterSnippet; }
 namespace TR { class PPCMonitorExitSnippet; }
 namespace TR { class PPCReadMonitorSnippet; }
-namespace TR { class PPCHeapAllocSnippet; }
 
 namespace TR { class PPCAllocPrefetchSnippet; }
 
@@ -354,6 +353,7 @@ namespace TR { class ARM64Trg1Src3Instruction; }
 namespace TR { class ARM64Trg1MemInstruction; }
 namespace TR { class ARM64MemInstruction; }
 namespace TR { class ARM64MemSrc1Instruction; }
+namespace TR { class ARM64MemSrc2Instruction; }
 namespace TR { class ARM64Trg1MemSrc1Instruction; }
 namespace TR { class ARM64Src1Instruction; }
 namespace TR { class ARM64Src2Instruction; }
@@ -927,7 +927,6 @@ public:
    void print(TR::FILE *, TR::PPCMonitorEnterSnippet *);
    void print(TR::FILE *, TR::PPCMonitorExitSnippet *);
    void print(TR::FILE *, TR::PPCReadMonitorSnippet *);
-   void print(TR::FILE *, TR::PPCHeapAllocSnippet *);
    void print(TR::FILE *, TR::PPCAllocPrefetchSnippet *);
 
 
@@ -1124,6 +1123,7 @@ public:
    void print(TR::FILE *, TR::ARM64Trg1MemInstruction *);
    void print(TR::FILE *, TR::ARM64MemInstruction *);
    void print(TR::FILE *, TR::ARM64MemSrc1Instruction *);
+   void print(TR::FILE *, TR::ARM64MemSrc2Instruction *);
    void print(TR::FILE *, TR::ARM64Trg1MemSrc1Instruction *);
    void print(TR::FILE *, TR::ARM64Src1Instruction *);
    void print(TR::FILE *, TR::ARM64Src2Instruction *);
