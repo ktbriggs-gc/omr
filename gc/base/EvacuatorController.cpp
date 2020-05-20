@@ -410,17 +410,21 @@ void MM_EvacuatorController::assertGenerationalInvariant(MM_EnvironmentStandard 
 }
 
 void
-MM_EvacuatorController::notifyOfWork()
+MM_EvacuatorController::notifyOfWork(MM_Evacuator *evacuator)
 {
 	/* only one notification is required if >1 fat evacutors have distributable work when a stall condition is raised */
-	if (1 == VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 0)) {
-		VM_AtomicSupport::readBarrier();
+	if (0 < evacuator->getDistributableVolumeOfWork(MM_Evacuator::min_workspace_release)) {
+		if (1 == VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 1)) {
+			acquireController();
 
-		acquireController();
-		if (0 < _stalledEvacuatorCount) {
-			omrthread_monitor_notify(_controllerMutex);
+			if (0 < evacuator->getDistributableVolumeOfWork(MM_Evacuator::min_workspace_release)) {
+				if (1 == VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 0)) {
+					omrthread_monitor_notify(_controllerMutex);
+				}
+			}
+
+			releaseController();
 		}
-		releaseController();
 	}
 }
 
@@ -869,7 +873,7 @@ void
 MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
 {
 #if defined(EVACUATOR_DEBUG)
-	if ((MM_EnvironmentStandard *)env)->getEvacuator()->isDebugEnd()) {
+	if (MM_Evacuator::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_END)) {
 #endif /* defined(EVACUATOR_DEBUG) */
 		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
 		MM_ScavengerStats *stats = &_extensions->scavengerStats;

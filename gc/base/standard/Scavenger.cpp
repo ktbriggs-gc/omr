@@ -506,7 +506,7 @@ MM_Scavenger::scavenge(MM_EnvironmentBase *envBase)
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 #if defined(EVACUATOR_DEBUG)
-		if (_debugger.isDebugEnd()) {
+		if (MM_Evacuator::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_END)) {
 #endif /* defined(EVACUATOR_DEBUG) */
 			if (!_extensions->isEvacuatorEnabled()) {
 				omrtty_printf("%5lu  0   :  gc start; survivor{%lx %lx} tenure{%lx %lx} evacuate{%lx %lx} projection:%lx\n", _extensions->scavengerStats._gcCount,
@@ -2888,10 +2888,10 @@ MM_Scavenger::pruneRememberedSetList(MM_EnvironmentStandard *env)
 						}
 #endif /* OMR_GC_MODRON_CONCURRENT_MARK */
 #if defined(EVACUATOR_DEBUG)
-						if (_debugger.isDebugRemembered()) {
+						if (MM_Evacuator::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_REMEMBERED)) {
 							omrtty_printf("%5lu %2lu   :     prune; object:%lx; flags:%lx\n", getEpoch()->gc, getEpoch()->epoch, (uintptr_t)objectPtr, _extensions->objectModel.getObjectFlags(objectPtr));
 						}
-					} else if (_debugger.isDebugRemembered()) {
+					} else if (MM_Evacuator::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_REMEMBERED)) {
 						omrtty_printf("%5lu %2lu   :   ~retain; object:%lx; flags:%lx\n", getEpoch()->gc, getEpoch()->epoch, (uintptr_t)objectPtr, _extensions->objectModel.getObjectFlags(objectPtr));
 #elif defined(OMR_GC_CONCURRENT_SCAVENGER)
 					} else {
@@ -2908,7 +2908,7 @@ MM_Scavenger::pruneRememberedSetList(MM_EnvironmentStandard *env)
 					omrtty_printf("{SCAV: Remembered set object %p}\n", objectPtr);
 #endif /* OMR_SCAVENGER_TRACE_REMEMBERED_SET */
 #if defined(EVACUATOR_DEBUG)
-					if (_debugger.isDebugRemembered()) {
+					if (MM_Evacuator::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_REMEMBERED)) {
 						omrtty_printf("%5lu %2lu   :    retain; object:%lx; flags:%lx\n", getEpoch()->gc, getEpoch()->epoch, (uintptr_t)objectPtr, _extensions->objectModel.getObjectFlags(objectPtr));
 					}
 #endif /* defined(EVACUATOR_DEBUG) */
@@ -3047,12 +3047,12 @@ MM_Scavenger::scavengeRememberedSetList(MM_EnvironmentStandard *env)
 					/* We want to remember this object after all; clear the flag for removal. */
 					*slotPtr = (omrobjectptr_t)((uintptr_t)*slotPtr & ~(uintptr_t)DEFERRED_RS_REMOVE_FLAG);
 #if defined(EVACUATOR_DEBUG)
-					if (_debugger.isDebugRemembered()) {
+					if (MM_Evacuator::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_REMEMBERED)) {
 						OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
 						omrtty_printf("%5lu %lu   :  remember; object:%lx; flags:%lx\n", getEpoch()->gc, getEpoch()->epoch, (uintptr_t)objectPtr, _extensions->objectModel.getObjectFlags(objectPtr));
 					}
 				} else {
-					if (_debugger.isDebugRemembered()) {
+					if (MM_Evacuator::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_REMEMBERED)) {
 						OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
 						omrtty_printf("%5lu %2lu   : ~remember; object:%lx; flags:%lx\n", getEpoch()->gc, getEpoch()->epoch, (uintptr_t)objectPtr, _extensions->objectModel.getObjectFlags(objectPtr));
 					}

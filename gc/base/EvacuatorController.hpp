@@ -29,6 +29,7 @@
 #include "omr.h"
 #include "omrcfg.h"
 
+#include "AtomicSupport.hpp"
 #include "Collector.hpp"
 #include "CollectorLanguageInterface.hpp"
 #include "EnvironmentStandard.hpp"
@@ -371,8 +372,12 @@ public:
 	 * actually acquire the controller to post the notification.
 	 *
 	 * Caller must not acquire/release the controller before/after the call
+	 *
+	 * @param worker the evacuator that is notifying
 	 */
-	void notifyOfWork();
+	void notifyOfWork(MM_Evacuator *evacuator);
+
+	bool isNotififyOfWorkPending() { return 1 == VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 1); }
 
 	void releaseController() { omrthread_monitor_exit(_controllerMutex); }
 

@@ -26,6 +26,7 @@
 #include "EvacuatorBase.hpp"
 
 #if defined(EVACUATOR_DEBUG)
+const char *
 MM_EvacuatorBase::callsite(const char *id) {
 	const char *callsite = strrchr(id, '/');
 	if (NULL == callsite) {

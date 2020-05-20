@@ -431,7 +431,6 @@ public:
 	bind(MM_EnvironmentStandard *env, uintptr_t evacuatorIndex, MM_MemorySubSpace *subspace, bool isTenure)
 	{
 #if defined(EVACUATOR_DEBUG)
-		Debug_MM_true(_evacuator == static_cast<MM_EvacuatorBase *>(env->getEvacuator()));
 		if (!_tenure) {
 			Debug_MM_true(0 == (_discarded + _flushed + _recycled));
 			for (uintptr_t i = 0; i < max_whitelist; i++) {
@@ -477,9 +476,6 @@ public:
 		, _stats(NULL)
 		, _index(0)
 		, _tenure(false)
-#if defined(EVACUATOR_DEBUG)
-		, _evacuator(evacuator)
-#endif /* defined(EVACUATOR_DEBUG) */
 	{
 		for (uintptr_t i = 0; i < max_whitelist; i++) {
 			_whitelist[i] = NULL;

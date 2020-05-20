@@ -250,7 +250,10 @@ public:
 			_small_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += objectSize;
 			_small_object_counts[bin] += 1;
 		} else {
-			bin = (bin < OMR_SCAVENGER_DISTANCE_BINS) ? bin : (OMR_SCAVENGER_DISTANCE_BINS - 1);
+			bin -= max;
+			if (OMR_SCAVENGER_DISTANCE_BINS <= bin) {
+				bin = OMR_SCAVENGER_DISTANCE_BINS - 1;
+			}
 			_large_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += objectSize;
 			_large_object_counts[bin] += 1;
 		}

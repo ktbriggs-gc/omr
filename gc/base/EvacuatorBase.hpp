@@ -126,6 +126,14 @@ protected:
 	const uintptr_t _evacuatorScanOptions;
 
 public:
+	/* Enumeration of memory spaces that are receiving evacuated material */
+	typedef enum Region {
+		survivor					/* survivor semispace for current gc */
+		, tenure					/* tenure space */
+		, evacuate					/* evacuate semispace for current gc */
+		, unreachable				/* upper bound for evacuation regions */
+	} Region;
+
 	/* Enumeration of conditions that relate to evacuator operation (superset of evacuatorScanOptions */
 	typedef enum ConditionFlag {
 		  breadth_first_always = 1	/* forcing outside copy for all objects all the time */
@@ -218,10 +226,12 @@ public:
 	static const char *
 	conditionName(ConditionFlag condition)
 	{
+		static const char *conditionNames[] = {"bfa","bfr","rr","sh","stall","ro","stf","ttf","itf","so","df"};
 		uintptr_t flag = MM_Math::floorLog2((uintptr_t)condition);
+
+		Debug_MM_true((conditionCount() * sizeof(const char *)) == sizeof(conditionNames));
 		Debug_MM_true((flag < conditionCount()) && (((uintptr_t)1 << flag) == condition));
 
-		static const char *conditionNames[] = {"bfa","bfr","rr","sh","stall","ro","stf","ttf","itf","so","df"};
 		return ((flag < conditionCount()) && (((uintptr_t)1 << flag) == condition)) ? conditionNames[flag] : "";
 	}
 	bool isAnyDebugFlagSet(uintptr_t flags) const { return isTraceOptionSelected(flags); }
@@ -283,9 +293,7 @@ public:
 	, _sizeofObjectReferenceSlot((uintptr_t)GC_SlotObject::addToSlotAddress((fomrobject_t *)(&_extensions), 1, _compressObjectReferences) - (uintptr_t)(&_extensions))
 	, _evacuatorTraceOptions(_extensions->evacuatorTraceOptions)
 	, _evacuatorScanOptions(staticScanOptions(_extensions))
-	{
-		Debug_MM_true((sizeof(_conditionNames) * sizeof(uintptr_t)) == (MM_Math::floorLog2(MM_Evacuator::conditions_mask + 1)));
-	}
+	{ }
 };
 
 #endif /* EVACUATORBASE_HPP_ */

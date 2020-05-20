@@ -325,36 +325,6 @@ public:
 	}
 
 	/**
-	 * Move unscanned work to workspace. No work is moved for active split array scanspaces or
-	 * for scanspaces holding region whitespace. Otherwise if the scanspace is active the
-	 * caller must provide the total size of the active object at the current scan head.
-	 *
-	 * @param activeObjectSize the consumed size in bytes of the active object
-	 * @param workspace the workspace to push unscanned work to
-	 * @return the volume of work cut into the workspace
-	 */
-	uintptr_t
-	cutWork(uintptr_t activeObjectSize, MM_EvacuatorWorkspace *workspace)
-	{
-		Debug_MM_true(activeObjectSize <= getWorkSize());
-
-		workspace->base = NULL;
-		workspace->next = NULL;
-		workspace->offset = 0;
-		workspace->length = 0;
-
-		/* skip scanspaces holding region whitespace and active split array scanspaces */
-		if ((0 == getWhiteSize()) && !isSplitArrayScanspace()) {
-			/* cut scanspace work following active object (or base, if inactive) into workspace */
-			workspace->base = (omrobjectptr_t)(_scan + activeObjectSize);
-			workspace->length = getWorkSize() - activeObjectSize;
-			_copy = _end = (uint8_t*)workspace->base;
-		}
-
-		return workspace->length;
-	}
-
-	/**
 	 * Reset the base to scan head to clear scanned work.
 	 *
 	 * @param initialize set to true to reset scanscape to original state

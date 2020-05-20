@@ -50,15 +50,6 @@ class MM_Evacuator : public MM_EvacuatorBase
 /*
  * Data members
  */
-public:
-	/* Enumeration of memory spaces that are receiving evacuated material */
-	typedef enum Region {
-		survivor					/* survivor semispace for current gc */
-		, tenure					/* tenure space */
-		, evacuate					/* evacuate semispace for current gc */
-		, unreachable				/* upper bound for evacuation regions */
-	} Region;
-
 private:
 	/* at least 3 stack frames are required -- bottom frame and a parking frame per region to hold whitespace when bottom frame is cleared */
 	MM_EnvironmentStandard *_env;					/* collecting thread environment (this thread) */
@@ -144,7 +135,6 @@ private:
 	MMINLINE void findWork();
 	MMINLINE void gotWork();
 	MMINLINE void addWork(MM_EvacuatorWorkspace *work);
-	MMINLINE bool hasDistributableWork(uintptr_t workReleaseThreshold, uintptr_t volumeOfWork);
 	MMINLINE void splitPointerArrayWork(omrobjectptr_t pointerArray);
 	MMINLINE bool isSplitArrayWorkspace(const MM_EvacuatorWorkspace *work) const;
 	MMINLINE uintptr_t adjustWorkReleaseThreshold();
@@ -216,12 +206,19 @@ public:
 	 */
 	void unbindWorkerThread(MM_EnvironmentStandard *env);
 
+	/**
+	 * Bound artifacts
+	 */
 	uintptr_t getWorkerIndex() const { return _workerIndex; }
 	MM_EnvironmentStandard *getEnvironment() const { return _env; }
 	MM_EvacuatorDelegate *getDelegate() { return &_delegate; }
+
+	/**
+	 * Work status
+	 */
 	bool hasScanWork() const { return (NULL != _scanStackFrame); }
 	uintptr_t getVolumeOfWork() { return _workList.volume(); }
-
+	uintptr_t getDistributableVolumeOfWork(uintptr_t workReleaseThreshold);
 
 	bool isInEvacuate(void *address) const { return (_heapBounds[evacuate][0] <= (uint8_t *)address) && ((uint8_t *)address < _heapBounds[evacuate][1]); }
 	bool isInSurvivor(void *address) const { return (_heapBounds[survivor][0] <= (uint8_t *)address) && ((uint8_t *)address < _heapBounds[survivor][1]); }
