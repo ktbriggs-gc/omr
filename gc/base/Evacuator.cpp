@@ -1226,32 +1226,6 @@ MM_Evacuator::next(MM_EvacuatorScanspace *nextFrame, const Region region)
 	return nextFrame;
 }
 
-MM_EvacuatorScanspace*
-MM_Evacuator::lower(const Region region, MM_EvacuatorScanspace *baseFrame)
-{
-	Debug_MM_true(survivor == getEvacuationRegion(_whiteStackFrame[survivor]->getBase()));
-	Debug_MM_true(tenure == getEvacuationRegion(_whiteStackFrame[tenure]->getBase()));
-
-	/* try to pull unscanned work (if any) and whitespace into a lower stack frame */
-	if (baseFrame < _whiteStackFrame[region]) {
-
-		while ((baseFrame < _stackCeiling) && (!baseFrame->isEmpty() || (baseFrame == _whiteStackFrame[otherEvacuationRegion(region)]))) {
-
-			/* frame holds work or whitespace for other evacuation region and must be skipped */
-			baseFrame += 1;
-		}
-		if (baseFrame < _whiteStackFrame[region]) {
-			baseFrame->pullTail(_whiteStackFrame[region], _whiteStackFrame[region]->getScanHead());
-			_whiteStackFrame[region] = baseFrame ;
-
-			Debug_MM_true(survivor == getEvacuationRegion(_whiteStackFrame[survivor]->getBase()));
-			Debug_MM_true(tenure == getEvacuationRegion(_whiteStackFrame[tenure]->getBase()));
-		}
-	}
-
-	return _whiteStackFrame[region];
-}
-
 void
 MM_Evacuator::push(MM_EvacuatorScanspace * const nextFrame)
 {
