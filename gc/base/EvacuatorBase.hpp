@@ -138,17 +138,17 @@ public:
 	typedef enum ConditionFlag {
 		  breadth_first_always = 1	/* forcing outside copy for all objects all the time */
 		, breadth_first_roots = 2	/* forcing outside copy for root objects */
-		, reverse_roots	= 4			/* adding workspaces to worklist in LIFO order while scanning roots breadth first */
-		, scanning_heap = 8			/* this is raised while evacuator is in collective heap scan */
-		, stall = 16				/* forcing minimal work release threshold while distributing outside copy to stalled evacuators */
-		, recursive_object = 32		/* forcing outside copy for a chain of mixed self referencing objects rooted in object to be scanned */
+		, scanning_heap = 4			/* this is raised while evacuator is in collective heap scan */
+		, stall = 8					/* forcing minimal work release threshold while distributing outside copy to stalled evacuators */
+		, recursive_object = 16		/* forcing outside copy for a chain of mixed self referencing objects rooted in object to be scanned */
+		, indexable_object = 32		/* forcing array elements outside for close copying */
 		, survivor_tail_fill = 64	/* forcing outside copy to fill survivor outside copyspace remainder */
 		, tenure_tail_fill = 128	/* forcing outside copy to fill tenure outside copyspace remainder */
-		, inside_tail_fill = 256	/* allowing inside copy only as required to fill remainder inside whitespace to discard tolerance (32 bytes) */
-		, stack_overflow = 512		/* forcing outside copy and minimal work release threshold while winding down stack after stack overflow */
-		, depth_first = 1024		/* forcing depth-first scanning up the stack until popped to bottom frame without stack_overflow */
-		, conditions_mask = 2047	/* bit mask covering above flags */
-		, static_mask = (breadth_first_always + breadth_first_roots + reverse_roots)
+		, stack_overflow = 256		/* forcing outside copy and minimal work release threshold while winding down stack after stack overflow */
+		, depth_first = 512			/* forcing depth-first scanning up the stack until popped to bottom frame without stack_overflow */
+		, conditions_mask = 1023	/* bit mask covering above flags */
+		, outside_mask = (breadth_first_always + breadth_first_roots + recursive_object + indexable_object + stall + stack_overflow)
+		, static_mask = (breadth_first_always + breadth_first_roots + indexable_object)
 		, options_mask = (static_mask + recursive_object)
 		, dynamic_mask = (conditions_mask - static_mask)
 	} ConditionFlag;
@@ -173,12 +173,6 @@ public:
 
 	/* multiplier for minimum workspace release determines threshold byte count for objects overflowing copyspace whitespace remainder */
 	static const uintptr_t max_copyspace_overflow_quanta = 6;
-
-	/* maximum number of array element slots to include in each split array segment */
-	static const uintptr_t max_split_segment_elements = DEFAULT_ARRAY_SPLIT_MINIMUM_SIZE;
-
-	/* minimum size in bytes of a splitable indexable object (header, element count, slots...) */
-	static const uintptr_t min_split_indexable_size = (max_split_segment_elements * sizeof(fomrobject_t));
 
 	/* soft upper bound on evacuator worklist volume in units of maximum workspace size to scale with workspace size */
 	static const uintptr_t worklist_volume_ceiling = 64;
@@ -226,7 +220,7 @@ public:
 	static const char *
 	conditionName(ConditionFlag condition)
 	{
-		static const char *conditionNames[] = {"bfa","bfr","rr","sh","stall","ro","stf","ttf","itf","so","df"};
+		static const char *conditionNames[] = {"bfa","bfr","sh","stall","ro","io","stf","ttf","so","df"};
 		uintptr_t flag = MM_Math::floorLog2((uintptr_t)condition);
 
 		Debug_MM_true((conditionCount() * sizeof(const char *)) == sizeof(conditionNames));
@@ -277,11 +271,6 @@ public:
 			scanOptions |= (breadth_first_always | breadth_first_roots);
 		}
 
-		/* reversing roots does not apply unless breadth_first_roots */
-		if (0 == (scanOptions & breadth_first_roots)) {
-			scanOptions &= ~(uintptr_t)reverse_roots;
-		}
-
 		return scanOptions;
 	}
 
@@ -290,7 +279,7 @@ public:
 	: _extensions(extensions)
 	, _conditionFlags(0)
 	, _compressObjectReferences(extensions->compressObjectReferences())
-	, _sizeofObjectReferenceSlot((uintptr_t)GC_SlotObject::addToSlotAddress((fomrobject_t *)(&_extensions), 1, _compressObjectReferences) - (uintptr_t)(&_extensions))
+	, _sizeofObjectReferenceSlot(_compressObjectReferences ? sizeof(uint32_t) : sizeof(uint64_t))
 	, _evacuatorTraceOptions(_extensions->evacuatorTraceOptions)
 	, _evacuatorScanOptions(staticScanOptions(_extensions))
 	{ }

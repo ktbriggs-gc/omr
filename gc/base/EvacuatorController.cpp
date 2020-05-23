@@ -889,6 +889,20 @@ MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
 		}
 		omrtty_printf(" %llu\n", contained);
 
+		omrtty_printf("%5lu      :log volume;", stats->_gcCount);
+		uintptr_t sumVolume = 0, smallVolume = 0;
+		uintptr_t logSmall = MM_Math::floorLog2(_extensions->evacuatorMaximumInsideCopySize);
+		for (uintptr_t volume = 0; volume < OMR_SCAVENGER_CACHESIZE_BINS; volume += 1) {
+			if (volume < logSmall) {
+				smallVolume += stats->_object_volume_counts[volume];
+			}
+			sumVolume += stats->_object_volume_counts[volume];
+			omrtty_printf(" %lu", sumVolume);
+		}
+		double smallRatio = (double)smallVolume / (double)sumVolume;
+		uintptr_t objectCount = stats->_object_volume_counts[OMR_SCAVENGER_CACHESIZE_BINS];
+		omrtty_printf(" %lu %lu %lu %0.3f\n", smallVolume, sumVolume, objectCount, smallRatio);
+
 		omrtty_printf("%5lu      : cachesize;", stats->_gcCount);
 		for (uintptr_t cachesize = 0; cachesize < OMR_SCAVENGER_CACHESIZE_BINS; cachesize += 1) {
 			omrtty_printf(" %llu", stats->_copy_cachesize_counts[cachesize]);
@@ -900,18 +914,6 @@ MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
 			omrtty_printf(" %llu", stats->_work_packetsize_counts[worksize]);
 		}
 		omrtty_printf(" %lx\n", stats->_work_packetsize_sum);
-
-		omrtty_printf("%5lu      :     small;", stats->_gcCount);
-		for (uintptr_t smallsize = 0; smallsize < OMR_SCAVENGER_DISTANCE_BINS; smallsize += 1) {
-			omrtty_printf(" %lu", stats->_small_object_counts[smallsize]);
-		}
-		omrtty_printf(" %lx\n", stats->_small_object_counts[OMR_SCAVENGER_DISTANCE_BINS]);
-
-		omrtty_printf("%5lu      :     large;", stats->_gcCount);
-		for (uintptr_t largesize = 0; largesize < OMR_SCAVENGER_DISTANCE_BINS; largesize += 1) {
-			omrtty_printf(" %lu", stats->_large_object_counts[largesize]);
-		}
-		omrtty_printf(" %lx\n", stats->_large_object_counts[OMR_SCAVENGER_DISTANCE_BINS]);
 
 		if (_extensions->isEvacuatorEnabled()) {
 			uintptr_t maxFrame = OMR_MAX(MM_Evacuator::unreachable, _extensions->evacuatorMaximumStackDepth);
@@ -958,6 +960,7 @@ MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
 
 			Debug_MM_true((_finalDiscardedBytes + _finalFlushedBytes) == (stats->_flipDiscardBytes + stats->_tenureDiscardBytes));
 			if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_EPOCH)) {
+				const MM_EvacuatorHistory::Epoch *lastEpoch = _history.getEpoch();
 				for (uintptr_t epochIndex =  0; epochIndex <= _history.maxEpoch; epochIndex += 1) {
 					MM_EvacuatorHistory::Epoch *epoch = _history.getEpoch(epochIndex);
 					if (_history.isRecorded(epoch)) {
@@ -978,6 +981,9 @@ MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
 								((double)(epoch->duration) / 1000.0));
 						omrtty_printf("%8lx %8lx %8lx %6lx %3lx %3lx %3lx %4lu %3lu\n", epoch->sumVolumeOfWork, epoch->minVolumeOfWork, epoch->maxVolumeOfWork,
 								epoch->volumeQuota, epoch->volumeHistogram[0], epoch->volumeHistogram[1], epoch->volumeHistogram[2], epoch->cleared, epoch->stalled);
+					}
+					if (epoch >= lastEpoch) {
+						break;
 					}
 				}
 			}

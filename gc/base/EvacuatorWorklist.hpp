@@ -269,7 +269,7 @@ public:
 	const MM_EvacuatorWorkspace *peek() const { return _head; }
 
 	/**
-	 * Append a workspace to the list.
+	 * Append/prepend a workspace to the list.
 	 *
 	 * @param work the workspace to add
 	 */
@@ -284,9 +284,8 @@ public:
 		VM_AtomicSupport::add(&_volume, volume(work));
 		VM_AtomicSupport::readBarrier();
 
-		/* if work not split array workspace and volume is greater than head insert as head else append as tail */
+		/* append/prepend work to worklist */
 		work->next = NULL;
-		push |= (0 == work->offset) && (volume() < MM_EvacuatorBase::min_split_indexable_size) && (volume(work) > volume(_head));
 		if (NULL == _head) {
 			_head = _tail = work;
 		} else if (push) {

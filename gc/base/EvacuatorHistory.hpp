@@ -72,7 +72,7 @@ public:
 	/* epochs are unrecorded until duration is set */
 	bool isRecorded(Epoch *epoch) { return (NULL != epoch) && (0 < epoch->tenureAllocationCeiling) && (0 < epoch->survivorAllocationCeiling); }
 
-	/* get the most recently committed epoch (or an empty epoch record if none committed yet) */
+	/* get the most recently committed epoch (or an empty epoch record if none committed yet in which case _last is <0) */
 	const Epoch *getEpoch() { return getEpoch((0 < _last) ? (uintptr_t)_last : 0); }
 
 	/* get a past (committed) or the current (uncommitted) epoch */
@@ -104,7 +104,7 @@ public:
 		while ((previous > &_history[0]) && !isRecorded(previous)) {
 			previous -= 1;
 		}
-		return isRecorded(previous) ? previous : epoch;
+		return (previous > &_history[0]) ? previous : epoch;
 	}
 
 	/* clear history for starting a gc cycle */

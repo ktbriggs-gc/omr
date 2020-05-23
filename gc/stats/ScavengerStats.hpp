@@ -138,8 +138,7 @@ public:
 	uint64_t _copy_distance_counts[OMR_SCAVENGER_DISTANCE_BINS];
 	uint64_t _copy_cachesize_counts[OMR_SCAVENGER_CACHESIZE_BINS];
 	uint64_t _work_packetsize_counts[OMR_SCAVENGER_DISTANCE_BINS];
-	uint64_t _small_object_counts[OMR_SCAVENGER_DISTANCE_BINS+1];
-	uint64_t _large_object_counts[OMR_SCAVENGER_DISTANCE_BINS+1];
+	uint64_t _object_volume_counts[OMR_SCAVENGER_DISTANCE_BINS+1];
 	uint64_t _copy_cachesize_sum;
 	uint64_t _work_packetsize_sum;
 
@@ -241,22 +240,14 @@ public:
 	}
 
 	MMINLINE void
-	countObjectSize(uintptr_t objectSize, uintptr_t maxInsideCopySize)
+	countObjectSize(uintptr_t objectSize)
 	{
+		_object_volume_counts[OMR_SCAVENGER_CACHESIZE_BINS] += 1;
 		uintptr_t bin = MM_Math::floorLog2(objectSize);
-		uintptr_t max = MM_Math::floorLog2(maxInsideCopySize);
-		if (bin < max) {
-			bin = objectSize / OMR_SCAVENGER_DISTANCE_BINS;
-			_small_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += objectSize;
-			_small_object_counts[bin] += 1;
-		} else {
-			bin -= max;
-			if (OMR_SCAVENGER_DISTANCE_BINS <= bin) {
-				bin = OMR_SCAVENGER_DISTANCE_BINS - 1;
-			}
-			_large_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += objectSize;
-			_large_object_counts[bin] += 1;
+		if (bin >= (OMR_SCAVENGER_CACHESIZE_BINS - 1)) {
+			bin = OMR_SCAVENGER_CACHESIZE_BINS - 1;
 		}
+		_object_volume_counts[bin] += objectSize;
 	}
 
 	void clear(bool firstIncrement);

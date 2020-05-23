@@ -798,12 +798,10 @@ MM_Scavenger::mergeGCStatsBase(MM_EnvironmentBase *env, MM_ScavengerStats *final
 		finalGCStats->_copy_distance_counts[i] += scavStats->_copy_distance_counts[i];
 #endif /* OMR_SCAVENGER_TRACK_COPY_DISTANCE */
 		finalGCStats->_work_packetsize_counts[i] += scavStats->_work_packetsize_counts[i];
-		finalGCStats->_small_object_counts[i] += scavStats->_small_object_counts[i];
-		finalGCStats->_large_object_counts[i] += scavStats->_large_object_counts[i];
 	}
-	finalGCStats->_small_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += scavStats->_small_object_counts[OMR_SCAVENGER_DISTANCE_BINS];
-	finalGCStats->_large_object_counts[OMR_SCAVENGER_DISTANCE_BINS] += scavStats->_large_object_counts[OMR_SCAVENGER_DISTANCE_BINS];
+	finalGCStats->_object_volume_counts[OMR_SCAVENGER_CACHESIZE_BINS] += scavStats->_object_volume_counts[OMR_SCAVENGER_CACHESIZE_BINS];
 	for (uintptr_t i = 0; i < OMR_SCAVENGER_CACHESIZE_BINS; i++) {
+		finalGCStats->_object_volume_counts[i] += scavStats->_object_volume_counts[i];
 		finalGCStats->_copy_cachesize_counts[i] += scavStats->_copy_cachesize_counts[i];
 	}
 	finalGCStats->_leafObjectCount += scavStats->_leafObjectCount;
@@ -1713,7 +1711,7 @@ MM_Scavenger::copy(MM_EnvironmentStandard *env, MM_ForwardedHeader* forwardedHea
 		/* Update the stats */
 		MM_ScavengerStats *scavStats = &env->_scavengerStats;
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-		scavStats->countObjectSize(objectReserveSizeInBytes, _extensions->evacuatorMaximumInsideCopySize);
+		scavStats->countObjectSize(objectReserveSizeInBytes);
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 		if(copyCache->flags & OMR_SCAVENGER_CACHE_TYPE_TENURESPACE) {
 			scavStats->_tenureAggregateCount += 1;

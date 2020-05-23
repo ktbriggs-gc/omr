@@ -70,9 +70,9 @@ private:
 	MM_ScavengerStats *_stats;						/* pointer to MM_EnvironmentBase::_scavengerStats */
 
 	MM_EvacuatorScanspace * const _stackBottom;		/* bottom (location) of scan stack */
-	MM_EvacuatorScanspace * const _stackTop;		/* physical limit determines number of frames allocated for scan stack */
-	MM_EvacuatorScanspace * const _stackCeiling;	/* operational limit of depth of scan stack (may be below top */
-	MM_EvacuatorScanspace * _stackLimit;			/* normally set to ceiling, set to bottom to force flushing to outside copyspaces */
+	const MM_EvacuatorScanspace * const _stackTop;	/* physical limit determines number of frames allocated for scan stack */
+	const MM_EvacuatorScanspace * const _stackCeiling;	/* normative limit determines maximal depth of scan stack (may be below top) */
+	const MM_EvacuatorScanspace * _stackLimit;		/* operational limit is set to ceiling for full stack scanning or bottom to force flushing to outside copyspaces */
 	MM_EvacuatorScanspace * _scanStackFrame;		/* points to active stack frame, NULL if scan stack empty */
 	MM_EvacuatorScanspace * _whiteStackFrame[2];	/* pointers to stack frames that hold survivor/tenure inside whitespace */
 
@@ -105,6 +105,7 @@ private:
 	bool scanClearable();
 	void scanComplete();
 
+	MMINLINE void clear();
 	MMINLINE void scan();
 	MMINLINE void pull(MM_EvacuatorWorklist *worklist);
 	MMINLINE void pull(MM_EvacuatorCopyspace *copyspace);
@@ -112,16 +113,16 @@ private:
 	MMINLINE void chain(omrobjectptr_t linkedObject, const uintptr_t selfReferencingSlotOffset, const uintptr_t worklistVolumeCeiling);
 	MMINLINE MM_EvacuatorScanspace *next(MM_EvacuatorScanspace *nextFrame, const Region region);
 	MMINLINE void push(MM_EvacuatorScanspace * const nextFrame);
+	MMINLINE MM_EvacuatorScanspace *top();
 	MMINLINE void copy();
 	MMINLINE void pop();
-	MMINLINE void clear();
 
 	MMINLINE bool reserveInsideScanspace(const Region region, const uintptr_t slotObjectSizeAfterCopy);
 	MMINLINE MM_EvacuatorWhitespace *refreshInsideWhitespace(const Region region, const uintptr_t slotObjectSizeAfterCopy);
 	MMINLINE omrobjectptr_t copyForward(MM_ForwardedHeader *forwardedHeader, fomrobject_t *referringSlotAddress, MM_EvacuatorCopyspace * const copyspace, const uintptr_t originalLength, const uintptr_t forwardedLength);
 
 	MM_EvacuatorCopyspace *reserveOutsideCopyspace(Region *region, const uintptr_t slotObjectSizeAfterCopy, bool useLargeCopyspace);
-	MMINLINE omrobjectptr_t copyOutside(Region region, MM_ForwardedHeader *forwardedHeader, fomrobject_t *referringSlotAddress, const uintptr_t slotObjectSizeBeforeCopy, const uintptr_t slotObjectSizeAfterCopy);
+	MMINLINE omrobjectptr_t copyOutside(Region region, MM_ForwardedHeader *forwardedHeader, fomrobject_t *referringSlotAddress, const uintptr_t slotObjectSizeBeforeCopy, const uintptr_t slotObjectSizeAfterCopy, const bool isSplitableArray);
 	MMINLINE bool shouldRefreshCopyspace(const Region region, const uintptr_t slotObjectSizeAfterCopy, const uintptr_t copyspaceRemainder) const;
 
 	MMINLINE void setCondition(ConditionFlag condition, bool value);
@@ -134,7 +135,7 @@ private:
 	MMINLINE bool getWork();
 	MMINLINE void findWork();
 	MMINLINE void gotWork();
-	MMINLINE void addWork(MM_EvacuatorWorkspace *work);
+	MMINLINE void addWork(MM_EvacuatorCopyspace *copyspace);
 	MMINLINE void splitPointerArrayWork(omrobjectptr_t pointerArray);
 	MMINLINE bool isSplitArrayWorkspace(const MM_EvacuatorWorkspace *work) const;
 	MMINLINE uintptr_t adjustWorkReleaseThreshold();
