@@ -387,10 +387,10 @@ public:
 	 * evacuators flush material to outside copyspaces to generate distributable workspaces as long as 1 or more
 	 * evacuators are stalled. Flushing continues until the stall condition clears and work quota is fulfilled.
 	 *
-	 * @param workQuantumVolume the volume of a quantum of work
+	 * @param workQuantumVolume the volume of a quantum of work (use 1 to return minimal number of workspaces required to fulfill)
 	 * @return volume of work required to fulfill quota
 	 */
-	uintptr_t getWorkNotificationQuota(uintptr_t workQuantumVolume) const { return (workQuantumVolume * _minimumWorkQuanta); }
+	uintptr_t getWorkNotificationQuota(uintptr_t workQuantumVolume = 1) const { return (workQuantumVolume * _minimumWorkQuanta); }
 
 	/**
 	 * Test evacuator worklist volume against work notification threshold.

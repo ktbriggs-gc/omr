@@ -331,7 +331,7 @@ public:
 		omrobjectptr_t object = *slotPtr;
 		if (isInEvacuate(object)) {
 			/* slot object must be evacuated -- determine before and after object size */
-			MM_ForwardedHeader forwardedHeader(object, _compressObjectReferences);
+			MM_ForwardedHeader forwardedHeader(object, _env->compressObjectReferences());
 			object = evacuateRootObject(&forwardedHeader, breadthFirst);
 			Debug_MM_true(NULL != object);
 			*slotPtr = object;
@@ -353,7 +353,7 @@ public:
 		omrobjectptr_t object = slotObject->readReferenceFromSlot();
 		if (isInEvacuate(object)) {
 			/* slot object must be evacuated -- determine before and after object size */
-			MM_ForwardedHeader forwardedHeader(object, _compressObjectReferences);
+			MM_ForwardedHeader forwardedHeader(object, _env->compressObjectReferences());
 			object = evacuateRootObject(&forwardedHeader, breadthFirst);
 			Debug_MM_true(NULL != object);
 			slotObject->writeReferenceToSlot(object);

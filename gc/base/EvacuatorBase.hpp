@@ -113,9 +113,6 @@ protected:
 	/* bitmap of current evacuator operating conditions */
 	uintptr_t _conditionFlags;
 
-	/* Reference compression */
-	const bool _compressObjectReferences;
-
 	/* Reference slot size in bytes */
 	const uintptr_t _sizeofObjectReferenceSlot;
 
@@ -211,7 +208,7 @@ public:
 
 	MM_GCExtensionsBase *getExtensions() const { return _extensions; }
 
-	bool compressObjectReferences() const { return _compressObjectReferences; }
+	bool compressObjectReferences() const { return _extensions->compressObjectReferences(); }
 
 	uintptr_t getReferenceSlotSize() const { return _sizeofObjectReferenceSlot; }
 
@@ -278,8 +275,7 @@ public:
 	MM_EvacuatorBase(MM_GCExtensionsBase *extensions)
 	: _extensions(extensions)
 	, _conditionFlags(0)
-	, _compressObjectReferences(extensions->compressObjectReferences())
-	, _sizeofObjectReferenceSlot(_compressObjectReferences ? sizeof(uint32_t) : sizeof(uint64_t))
+	, _sizeofObjectReferenceSlot(extensions->compressObjectReferences() ? sizeof(uint32_t) : sizeof(uint64_t))
 	, _evacuatorTraceOptions(_extensions->evacuatorTraceOptions)
 	, _evacuatorScanOptions(staticScanOptions(_extensions))
 	{ }

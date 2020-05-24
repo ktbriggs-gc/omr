@@ -484,7 +484,7 @@ MM_Evacuator::rescanThreadSlot(omrobjectptr_t *objectPtrIndirect)
 		/* the slot is still pointing at evacuate memory. This means that it must have been left unforwarded
 		 * in the first pass so that we would process it here.
 		 */
-		MM_ForwardedHeader forwardedHeader(objectPtr, compressObjectReferences());
+		MM_ForwardedHeader forwardedHeader(objectPtr, _env->compressObjectReferences());
 		omrobjectptr_t tenuredObjectPtr = forwardedHeader.getForwardedObject();
 		*objectPtrIndirect = tenuredObjectPtr;
 
@@ -919,29 +919,33 @@ MM_Evacuator::pull(MM_EvacuatorWorklist *worklist)
 	Debug_MM_true(NULL != worklist->peek());
 
 	/* make a local LIFO list of workspaces to be loaded onto the stack and scanned in worklist order */
-	uintptr_t limit = ((_stackTop - _stackBottom) - 2) >> 1;
-	if (isConditionSet(stall) && (worklist == &_workList) && (_controller->getWorkNotificationQuota(1) < limit)) {
-		limit = _controller->getWorkNotificationQuota(1);
-	}
 	MM_EvacuatorWorkspace *stacklist = worklist->next();
 	uintptr_t pulledVolume = worklist->volume(stacklist);
 	const MM_EvacuatorWorkspace *next = worklist->peek();
 	uintptr_t nextVolume = worklist->volume(next);
 
+	/* limit the number of stack frames that can be consumed */
+	uintptr_t limit = ((_stackTop - _stackBottom) - 2) >> 1;
+	if (isConditionSet(stall) && (worklist == &_workList)) {
+		/* if there are stalled evacuators reduce this to the number of minimal workspaces required to fulfill quota */
+		if (_controller->getWorkNotificationQuota() < limit) {
+			limit = _controller->getWorkNotificationQuota();
+		}
+	}
+
 	/* pull workspaces from source worklist into stack list until pulled volume levels up with donor worklist volume  */
 	while ((NULL != next) && ((pulledVolume + nextVolume) <= (worklist->volume() - nextVolume))) {
-		MM_EvacuatorWorkspace *workspace = NULL;
 
 		/* if under stack limit pull next workspace into stack list */
 		if (0 < limit) {
 			/* pull next workspace from source worklist and append to LIFO stack list (first in list -> first scanned in top stack frame) */
-			workspace = worklist->next();
+			MM_EvacuatorWorkspace *workspace = worklist->next();
 			workspace->next = stacklist;
 			stacklist = workspace;
 			limit -= 1;
 		} else if (&_workList != worklist) {
 			/* if source worklist belongs to other evacuator add workspace to own worklist (no need to take own mutex as this evacuator has the controller mutex) */
-			workspace = worklist->next();
+			MM_EvacuatorWorkspace *workspace = worklist->next();
 			_workList.add(workspace);
 		} else {
 			/* break out of worklist iteration */
@@ -982,6 +986,7 @@ MM_Evacuator::pull(MM_EvacuatorWorklist *worklist)
 				uintptr_t arrayBytes = getReferenceSlotSize() * ((GC_IndexableObjectScanner *)scanner)->getIndexableRange();
 				arrayHeaderSize = _scanStackFrame->getSize() - arrayBytes;
 			}
+
 		} else {
 
 			/* set scanscape: base = scan = workspace base, copy = limit = end = base + workspace volume */
@@ -1037,7 +1042,6 @@ void
 MM_Evacuator::copy()
 {
 	const uintptr_t sizeLimit = _maxInsideCopySize;
-	const bool compressed = _compressObjectReferences;
 	MM_EvacuatorScanspace * const stackFrame = _scanStackFrame;
 	const Region scanRegion = getEvacuationRegion(stackFrame->getBase());
 	uint8_t * const frameLimit = stackFrame->getBase() + (isConditionSet(depth_first) ? 0: _maxInsideCopyDistance);
@@ -1058,7 +1062,7 @@ MM_Evacuator::copy()
 			if (isInEvacuate(object)) {
 
 				/* copy and forward the slot object */
-				MM_ForwardedHeader forwardedHeader(object, compressed);
+				MM_ForwardedHeader forwardedHeader(object, _env->compressObjectReferences());
 				if (!forwardedHeader.isForwardedPointer()) {
 
 					/* slot object must be evacuated -- determine receiving region and before and after object size */
@@ -1473,7 +1477,7 @@ MM_Evacuator::chain(omrobjectptr_t linkedObject, const uintptr_t selfReferencing
 		if (isInEvacuate(forwardedAddress)) {
 
 			/* try to copy and forward the slot object */
-			MM_ForwardedHeader forwardedHeader(forwardedAddress, compressObjectReferences());
+			MM_ForwardedHeader forwardedHeader(forwardedAddress, _env->compressObjectReferences());
 			if (!forwardedHeader.isForwardedPointer()) {
 
 				/* determine receiving region and before and after object size and copy to an outside copyspace and continue chain */
