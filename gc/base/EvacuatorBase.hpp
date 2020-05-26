@@ -23,9 +23,9 @@
 #ifndef EVACUATORBASE_HPP_
 #define EVACUATORBASE_HPP_
 
-#undef EVACUATOR_DEBUG
+#define EVACUATOR_DEBUG
 #undef EVACUATOR_DEBUG_TRACE
-#define EVACUATOR_DEBUG_ALWAYS
+#undef EVACUATOR_DEBUG_ALWAYS
 
 #if defined(EVACUATOR_DEBUG) && defined(EVACUATOR_DEBUG_ALWAYS)
 #error "EVACUATOR_DEBUG and EVACUATOR_DEBUG_ALWAYS are mutually exclusive"
@@ -275,7 +275,7 @@ public:
 	MM_EvacuatorBase(MM_GCExtensionsBase *extensions)
 	: _extensions(extensions)
 	, _conditionFlags(0)
-	, _sizeofObjectReferenceSlot(extensions->compressObjectReferences() ? sizeof(uint32_t) : sizeof(uint64_t))
+	, _sizeofObjectReferenceSlot(extensions->compressObjectReferences() ? sizeof(uint32_t) : sizeof(uintptr_t))
 	, _evacuatorTraceOptions(_extensions->evacuatorTraceOptions)
 	, _evacuatorScanOptions(staticScanOptions(_extensions))
 	{ }

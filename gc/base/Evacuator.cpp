@@ -977,7 +977,7 @@ MM_Evacuator::pull(MM_EvacuatorWorklist *worklist)
 			uintptr_t startSlot = workspace->offset - 1;
 			uintptr_t stopSlot = startSlot + workspace->length;
 
-			/* split array object scanner is instantiated in scanspace but not activated until scanning starts */
+			/* split array object scanner is activated here - hence no way to determine whether scanning has started for frame */
 			GC_IndexableObjectScanner *scanner = (GC_IndexableObjectScanner *)_scanStackFrame->activateObjectScanner();
 			_delegate.getSplitPointerArrayObjectScanner(workspace->base, scanner, startSlot, stopSlot, GC_ObjectScanner::scanHeap);
 			_scanStackFrame->setSplitArrayScanspace(arrayHead, arrayEnd, startSlot, stopSlot);
@@ -989,7 +989,7 @@ MM_Evacuator::pull(MM_EvacuatorWorklist *worklist)
 
 		} else {
 
-			/* set scanscape: base = scan = workspace base, copy = limit = end = base + workspace volume */
+			/* set base = scan = workspace base, copy = limit = end = base + workspace volume, object scanner is NULL until scanning starts in frame */
 			_scanStackFrame->setScanspace((uint8_t *)workspace->base, (uint8_t *)workspace->base + workspace->length, workspace->length);
 		}
 		_stats->countWorkPacketSize((arrayHeaderSize + _workList.volume(workspace)), _controller->_maximumWorkspaceSize);
@@ -1233,12 +1233,10 @@ MM_Evacuator::next(MM_EvacuatorScanspace *nextFrame, const Region region)
 	}
 
 	/* frame is empty or holds whitespace for evacuation region or stack is blown */
-	if (nextFrame >= _stackLimit) {
+	if (nextFrame >= _stackCeiling) {
 
 		/* set stack overflow condition and inhibit push */
-		if (_stackLimit == _stackCeiling) {
-			setCondition(stack_overflow, true);
-		}
+		setCondition(stack_overflow, true);
 		return NULL;
 	}
 
@@ -1529,7 +1527,7 @@ MM_Evacuator::scanner(const bool advanceScanHead)
 				/* extra volume in first segment accounts for header and non-array data in object and may include more elements than subsequent segments */
 				if (objectScanner->isHeadObjectScanner()) {
 					uintptr_t arrayBytes = getReferenceSlotSize() * ((GC_IndexableObjectScanner *)objectScanner)->getIndexableRange();
-					scannedBytes = scanspace->getSize() - arrayBytes;
+					scannedBytes = _objectModel->getConsumedSizeInBytesWithHeader(scannedObject) - arrayBytes;
 				}
 				/* scan volume for split array data segment is preset when split array workspace is set into scanspace */
 				scannedBytes += scanspace->getSplitArrayScanVolume();
