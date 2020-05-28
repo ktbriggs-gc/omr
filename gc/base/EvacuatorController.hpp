@@ -296,7 +296,7 @@ public:
 	bool isEvacuatorFlagSet(uintptr_t flag) { return (flag == (_evacuatorFlags & flag)); }
 	bool isAnyEvacuatorFlagSet(uintptr_t flags) { return (0 != (_evacuatorFlags & flags)); }
 	bool areAllEvacuatorFlagsSet(uintptr_t flags) { return (flags == (_evacuatorFlags & flags)); }
-	void resetEvacuatorFlags() { VM_AtomicSupport::set(&_evacuatorFlags, 0); VM_AtomicSupport::readBarrier(); }
+	void resetEvacuatorFlags() { VM_AtomicSupport::set(&_evacuatorFlags, 0); }
 
 	/**
 	 * Get the number of GC threads dispatched for current gc cycle

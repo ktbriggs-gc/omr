@@ -55,7 +55,6 @@ public:
 private:
 
 protected:
-
 public:
 	/**
 	 * Basic array constructor obviates need for stdlibc++ linkage in gc component libraries. Array
@@ -149,7 +148,7 @@ public:
 			setLOA(isLOA);
 		}
 
-		Debug_MM_true((_base <= _copy) && (_copy <= _end));
+		assertCopyspaceInvariant();
 	}
 
 	/**
@@ -161,7 +160,9 @@ public:
 	void
 	advanceCopyHead(uintptr_t copiedBytes)
 	{
+		assertCopyspaceInvariant();
 		_copy += copiedBytes;
+		assertCopyspaceInvariant();
 	}
 
 	/**
@@ -174,6 +175,7 @@ public:
 	uint8_t *
 	rebase(uintptr_t *volume = NULL)
 	{
+		assertCopyspaceInvariant();
 		uint8_t *work = NULL;
 
 		/* return volume of work between base and copy head */
@@ -187,6 +189,7 @@ public:
 			_base = _copy;
 		}
 
+		assertCopyspaceInvariant();
 		return work;
 	}
 
@@ -200,10 +203,12 @@ public:
 	{
 		MM_EvacuatorWhitespace *freespace = NULL;
 
+		assertCopyspaceInvariant();
 		if (_end > _copy) {
 			freespace = MM_EvacuatorWhitespace::whitespace(_copy, getWhiteSize(), _evacuator->compressObjectReferences(), isLOA());
 			_end = _copy;
 		}
+		assertCopyspaceInvariant();
 
 		return freespace;
 	}
@@ -214,11 +219,20 @@ public:
 	 */
 	void reset()
 	{
+		assertCopyspaceInvariant();
 		Debug_MM_true(_copy == _end);
 
 		/* this effectively makes the copyspace empty but leaves some information for debugging */
 		_base = _copy = _end;
 		_flags = 0;
+		assertCopyspaceInvariant();
+	}
+
+	void
+	assertCopyspaceInvariant()
+	{
+		Debug_MM_true(_base <= _copy);
+		Debug_MM_true(_copy <= _end);
 	}
 
 	/**

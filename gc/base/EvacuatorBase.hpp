@@ -23,9 +23,9 @@
 #ifndef EVACUATORBASE_HPP_
 #define EVACUATORBASE_HPP_
 
-#define EVACUATOR_DEBUG
+#undef EVACUATOR_DEBUG
 #undef EVACUATOR_DEBUG_TRACE
-#undef EVACUATOR_DEBUG_ALWAYS
+#define EVACUATOR_DEBUG_ALWAYS
 
 #if defined(EVACUATOR_DEBUG) && defined(EVACUATOR_DEBUG_ALWAYS)
 #error "EVACUATOR_DEBUG and EVACUATOR_DEBUG_ALWAYS are mutually exclusive"
@@ -144,10 +144,9 @@ public:
 		, stack_overflow = 256		/* forcing outside copy and minimal work release threshold while winding down stack after stack overflow */
 		, depth_first = 512			/* forcing depth-first scanning up the stack until popped to bottom frame without stack_overflow */
 		, conditions_mask = 1023	/* bit mask covering above flags */
-		, outside_mask = (breadth_first_always + breadth_first_roots + recursive_object + indexable_object + stall + stack_overflow)
-		, static_mask = (breadth_first_always + breadth_first_roots + indexable_object)
-		, options_mask = (static_mask + recursive_object)
-		, dynamic_mask = (conditions_mask - static_mask)
+		, initial_mask = (breadth_first_always + breadth_first_roots)
+		, options_mask = (initial_mask + recursive_object + indexable_object)
+		, outside_mask = (options_mask + stall + stack_overflow)
 	} ConditionFlag;
 
 	/* Minimal size of scan stack -- a value of 1 forces breadth first scanning */
@@ -259,7 +258,7 @@ public:
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
 	static uintptr_t
-	staticScanOptions(MM_GCExtensionsBase *extensions)
+	selectedScanOptions(MM_GCExtensionsBase *extensions)
 	{
 		uintptr_t scanOptions = extensions->evacuatorScanOptions;
 
@@ -268,7 +267,7 @@ public:
 			scanOptions |= (breadth_first_always | breadth_first_roots);
 		}
 
-		return scanOptions;
+		return scanOptions & (uintptr_t)options_mask;
 	}
 
 	/* Note: any address in process space will do for reference slot size calculation */
@@ -277,7 +276,7 @@ public:
 	, _conditionFlags(0)
 	, _sizeofObjectReferenceSlot(extensions->compressObjectReferences() ? sizeof(uint32_t) : sizeof(uintptr_t))
 	, _evacuatorTraceOptions(_extensions->evacuatorTraceOptions)
-	, _evacuatorScanOptions(staticScanOptions(_extensions))
+	, _evacuatorScanOptions(selectedScanOptions(_extensions))
 	{ }
 };
 

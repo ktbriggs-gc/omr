@@ -46,7 +46,6 @@ MM_EvacuatorController::setEvacuatorFlag(uintptr_t flag, bool value)
 	} else {
 		oldFlags = VM_AtomicSupport::bitAnd(&_evacuatorFlags, ~flag);
 	}
-	VM_AtomicSupport::readBarrier();
 
 	return (flag == (flag & oldFlags));
 }
@@ -260,7 +259,6 @@ MM_EvacuatorController::bindWorker(MM_EnvironmentStandard *env)
 {
 	/* get an unbound evacuator instance */
 	uintptr_t workerIndex = VM_AtomicSupport::add(&_evacuatorIndex, 1) - 1;
-	VM_AtomicSupport::readBarrier();
 
 	/* instantiate evacuator task for this worker thread if required (evacuators are instantiated once and persist until vm shuts down) */
 	if (NULL == _evacuatorTask[workerIndex]) {
@@ -279,7 +277,6 @@ MM_EvacuatorController::bindWorker(MM_EnvironmentStandard *env)
 			/* all evacuator threads must have same view of dispatched thread count at this point */
 			VM_AtomicSupport::set(&_evacuatorCount, env->_currentTask->getThreadCount());
 			fillEvacuatorBitmap(_evacuatorMask);
-			VM_AtomicSupport::readBarrier();
 
 			/* set upper bounds for tlh allocation size, indexed by outside region -- reduce these for small survivor spaces */
 			uintptr_t copyspaceSize = _maximumCopyspaceSize;
@@ -356,11 +353,9 @@ MM_EvacuatorController::unbindWorker(MM_EnvironmentStandard *env)
 	clearEvacuatorBit(evacuator->getWorkerIndex(), _boundEvacuatorBitmap);
 
 	/* pull final remaining metrics from evacuator */
-	VM_AtomicSupport::writeBarrier();
 	VM_AtomicSupport::add(&_finalDiscardedBytes, evacuator->getDiscarded());
 	VM_AtomicSupport::add(&_finalFlushedBytes, evacuator->getFlushed());
 	VM_AtomicSupport::add(&_finalRecycledBytes, evacuator->getRecycled());
-	VM_AtomicSupport::readBarrier();
 	if (isEvacuatorBitmapEmpty(_boundEvacuatorBitmap)) {
 		Debug_MM_true(isEvacuatorBitmapEmpty(_stalledEvacuatorBitmap) || isAborting());
 		_finalEvacuatedBytes = _copiedBytes[MM_Evacuator::survivor] + _copiedBytes[MM_Evacuator::tenure];
@@ -402,11 +397,20 @@ void MM_EvacuatorController::assertGenerationalInvariant(MM_EnvironmentStandard 
 #endif /* defined(EVACUATOR_DEBUG) */
 
 	/* assert that the aggregate volume copied equals volume scanned */
-	VM_AtomicSupport::writeBarrier();
+	VM_AtomicSupport::readWriteBarrier();
 	uintptr_t totalCopied = _copiedBytes[MM_Evacuator::survivor] + _copiedBytes[MM_Evacuator::tenure];
-	Assert_GC_true_with_message4(env, (totalCopied == _scannedBytes) || isAborting(),
-			"copied bytes (survivor+tenure) (%lx+%lx)=%lx != %lx scanned bytes\n",
-			_copiedBytes[MM_Evacuator::survivor], _copiedBytes[MM_Evacuator::tenure], totalCopied, _scannedBytes);
+	if ((totalCopied != _scannedBytes) && !isAborting()) {
+#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+		VM_AtomicSupport::readWriteBarrier();
+		if ((totalCopied != _scannedBytes) && !isAborting()) {
+			OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
+			omrtty_printf("***[evacuator-controller] Misread of total cumulative copied/scanned bytes for asserting generational invariant\n");
+		}
+#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+		Assert_GC_true_with_message4(env, (totalCopied == _scannedBytes) || isAborting(),
+				"copied bytes (survivor+tenure) (%lx+%lx)=%lx != %lx scanned bytes\n",
+				_copiedBytes[MM_Evacuator::survivor], _copiedBytes[MM_Evacuator::tenure], totalCopied, _scannedBytes);
+	}
 }
 
 void
@@ -451,8 +455,6 @@ MM_EvacuatorController::isWaitingForWork(MM_Evacuator *worker)
 			omrthread_monitor_notify(_controllerMutex);
 		}
 
-		/* return to continue heap scan */
-		VM_AtomicSupport::readBarrier();
 		return false;
 	}
 
@@ -464,9 +466,9 @@ MM_EvacuatorController::isWaitingForWork(MM_Evacuator *worker)
 		Debug_MM_true(!testEvacuatorBit(workerIndex, _resumingEvacuatorBitmap));
 
 		VM_AtomicSupport::add(&_stalledEvacuatorCount, 1);
-		VM_AtomicSupport::readBarrier();
 
 		/* if all evacuators are stalled and none are resuming (ie, with work) the scan cycle can complete or abort */
+		VM_AtomicSupport::readWriteBarrier();
 		if (isEvacuatorBitmapFull(_stalledEvacuatorBitmap) && isEvacuatorBitmapEmpty(_resumingEvacuatorBitmap)) {
 
 			/* assert generational invariant: aggregate bytes copied == bytes scanned xor cycle aborted */
@@ -485,7 +487,6 @@ MM_EvacuatorController::isWaitingForWork(MM_Evacuator *worker)
 
 		/* set pending notification flag to request notification when an evacuator has distributable work */
 		VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 0, 1);
-		VM_AtomicSupport::readBarrier();
 
 		/* wait for another evacuator to notify of work or end of heap scan*/
 		worker->getEnvironment()->_scavengerStats._acquireScanListCount += 1;
@@ -499,7 +500,6 @@ MM_EvacuatorController::isWaitingForWork(MM_Evacuator *worker)
 		clearEvacuatorBit(workerIndex, _resumingEvacuatorBitmap);
 		clearEvacuatorBit(workerIndex, _stalledEvacuatorBitmap);
 		VM_AtomicSupport::subtract(&_stalledEvacuatorCount, 1);
-		VM_AtomicSupport::readBarrier();
 
 		/* return to complete heap scan */
 		return false;
@@ -512,25 +512,22 @@ MM_EvacuatorController::isWaitingForWork(MM_Evacuator *worker)
 void
 MM_EvacuatorController::reportProgress(MM_Evacuator *worker,  uintptr_t *copied, uintptr_t *scanned)
 {
-	/* any or all of these counters may be updated while this thread is sampling them, but epoch boundaries are metered by scanned volume */
 	VM_AtomicSupport::writeBarrier();
-	uintptr_t sampledScannedBytes = _scannedBytes;
-	uintptr_t aggregateScannedBytes = *scanned + VM_AtomicSupport::lockCompareExchange(&_scannedBytes, sampledScannedBytes, sampledScannedBytes + *scanned);
-	if (aggregateScannedBytes != (sampledScannedBytes + *scanned)) {
-		VM_AtomicSupport::add(&_scannedBytes, *scanned);
-	}
-	VM_AtomicSupport::readBarrier();
 
-	/* if above block succeeds these might be sampled in same timeslice, otherwise they may be skewed in the epochal record */
+	/* any or all of these counters may be updated while this thread is sampling them, but epoch boundaries are metered by scanned volume */
 	uintptr_t sampledCopiedBytes[] = {
 		VM_AtomicSupport::add(&_copiedBytes[MM_Evacuator::survivor], copied[MM_Evacuator::survivor]),
 		VM_AtomicSupport::add(&_copiedBytes[MM_Evacuator::tenure], copied[MM_Evacuator::tenure])
 	};
 
 	/* some epochs may be skipped due to noise in non-atomic block above (stats will merge into next recorded epoch) */
-	if (aggregateScannedBytes == (sampledScannedBytes + *scanned)) {
-		/* ... but at most one evacuator will cross any given epoch boundary, and only once ... */
+	uintptr_t sampledScannedBytes = _scannedBytes;
+	uintptr_t aggregateScannedBytes = *scanned + VM_AtomicSupport::lockCompareExchange(&_scannedBytes, sampledScannedBytes, sampledScannedBytes + *scanned);
+	if (aggregateScannedBytes == (*scanned + sampledScannedBytes)) {
+		/* at most one evacuator will cross any given epoch boundary, and only once ... */
 		reportProgress(worker, (aggregateScannedBytes - *scanned), aggregateScannedBytes, sampledCopiedBytes);
+	} else {
+		VM_AtomicSupport::add(&_scannedBytes, *scanned);
 	}
 
 	copied[MM_Evacuator::survivor] = 0;
@@ -597,7 +594,7 @@ MM_EvacuatorController::reportProgress(MM_Evacuator *worker, uintptr_t oldScanne
 				}
 
 				/* get next epoch record and fill it in */
-				MM_EvacuatorHistory::Epoch *epoch = _history.nextEpoch(newEpoch, lastEpoch);
+				MM_EvacuatorHistory::Epoch *epoch = _history.nextEpoch(newEpoch);
 				epoch->gc = worker->getEnvironment()->_scavengerStats._gcCount;
 				epoch->epoch = newEpoch;
 				epoch->duration = omrtime_hires_delta(_history.epochStartTime(currentTimestamp), currentTimestamp, OMRPORT_TIME_DELTA_IN_MICROSECONDS);
@@ -663,7 +660,6 @@ MM_EvacuatorController::calculateOptimalWhitespaceSize(MM_Evacuator::Region regi
 		while (allocationCeiling < *survivorAllocationCeiling) {
 			VM_AtomicSupport::lockCompareExchange(survivorAllocationCeiling, *survivorAllocationCeiling, allocationCeiling);
 		}
-		VM_AtomicSupport::readBarrier();
 	}
 
 	/* be as greedy as possible all the time in tenure */
@@ -781,7 +777,6 @@ MM_EvacuatorController::getObjectWhitespace(MM_Evacuator *evacuator, MM_Evacuato
 		while (length < _objectAllocationCeiling[region]) {
 			VM_AtomicSupport::lockCompareExchange(&_objectAllocationCeiling[region], _objectAllocationCeiling[region], length);
 		}
-		VM_AtomicSupport::readBarrier();
 	}
 
 	return whitespace;
@@ -851,11 +846,7 @@ MM_EvacuatorController::setEvacuatorBit(uintptr_t evacuatorIndex, volatile uintp
 {
 	uintptr_t evacuatorMask = 0;
 	uintptr_t evacuatorMap = mapEvacuatorIndexToMapAndMask(evacuatorIndex, &evacuatorMask);
-
-	uintptr_t previousBit =  VM_AtomicSupport::bitOr(&bitmap[evacuatorMap], evacuatorMask);
-	VM_AtomicSupport::readBarrier();
-
-	return previousBit;
+	return VM_AtomicSupport::bitOr(&bitmap[evacuatorMap], evacuatorMask);
 }
 
 /* clear evacuator bit in evacuator bitmap */
@@ -865,7 +856,6 @@ MM_EvacuatorController::clearEvacuatorBit(uintptr_t evacuatorIndex, volatile uin
 	uintptr_t evacuatorMask = 0;
 	uintptr_t evacuatorMap = mapEvacuatorIndexToMapAndMask(evacuatorIndex, &evacuatorMask);
 	VM_AtomicSupport::bitAnd(&bitmap[evacuatorMap], ~evacuatorMask);
-	VM_AtomicSupport::readBarrier();
 }
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)

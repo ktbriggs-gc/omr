@@ -151,7 +151,7 @@ public:
 
 		clearRememberedState();
 
-		Debug_MM_true(_copy <= _end);
+		assertScanspaceInvariant();
 	}
 
 	/**
@@ -176,8 +176,8 @@ public:
 
 		clearRememberedState();
 
-		Debug_MM_true((base == _base) && (_scan == _copy) &&(_copy == _end) && (_end == end));
 		Debug_MM_true((NULL != _objectScanner) && _objectScanner->isIndexableObject());
+		assertScanspaceInvariant();
 	}
 
 	/**
@@ -228,6 +228,7 @@ public:
 	void
 	advanceScanHead(uintptr_t scannedBytes)
 	{
+		assertScanspaceInvariant();
 		Debug_MM_true((_scan < _copy) == !isSplitArrayScanspace());
 
 		/* done scanning current object */
@@ -242,7 +243,7 @@ public:
 		/* done with active object scanner */
 		_objectScanner = NULL;
 
-		Debug_MM_true(_scan <= _copy);
+		assertScanspaceInvariant();
 	}
 
 	/**
@@ -254,6 +255,8 @@ public:
 	void
 	pullTail(MM_EvacuatorScanspace *fromspace, uint8_t *base)
 	{
+		fromspace->assertScanspaceInvariant();
+		assertScanspaceInvariant();
 		Debug_MM_true(isEmpty() || (this == fromspace));
 		Debug_MM_true(!fromspace->isSplitArrayScanspace());
 		Debug_MM_true(!isSplitArrayScanspace());
@@ -272,6 +275,9 @@ public:
 		/* reset remembered state and passivate active scanner */
 		clearRememberedState();
 		_objectScanner = NULL;
+
+		fromspace->assertScanspaceInvariant();
+		assertScanspaceInvariant();
 	}
 
 	/**
@@ -282,6 +288,8 @@ public:
 	void
 	pullWhitespace(MM_EvacuatorScanspace *fromspace)
 	{
+		fromspace->assertScanspaceInvariant();
+		assertScanspaceInvariant();
 		Debug_MM_true(isEmpty() || (this == fromspace));
 		Debug_MM_true(!fromspace->isSplitArrayScanspace());
 		Debug_MM_true(!isSplitArrayScanspace());
@@ -296,6 +304,8 @@ public:
 
 		/* trim tail of fromspace and leave base, scan head and flags as they are */
 		fromspace->_end = fromspace->_copy;
+		fromspace->assertScanspaceInvariant();
+		assertScanspaceInvariant();
 	}
 
 	/**
@@ -306,6 +316,8 @@ public:
 	void
 	pullWork(MM_EvacuatorCopyspace *fromspace)
 	{
+		fromspace->assertCopyspaceInvariant();
+		assertScanspaceInvariant();
 		Debug_MM_true(isEmpty() || (this == fromspace));
 		Debug_MM_true(!isSplitArrayScanspace());
 
@@ -322,6 +334,8 @@ public:
 		/* reset remembered state and passivate active scanner */
 		clearRememberedState();
 		_objectScanner = NULL;
+		fromspace->assertCopyspaceInvariant();
+		assertScanspaceInvariant();
 	}
 
 	/**
@@ -332,6 +346,7 @@ public:
 	void
 	reset(bool initialize)
 	{
+		assertScanspaceInvariant();
 		/* rebase scanspace (base = scan) and clear all flags */
 		_base = _scan;
 		_flags &= ~isSplitArrayFlag;
@@ -346,6 +361,7 @@ public:
 			_activations = 0;
 		}
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+		assertScanspaceInvariant();
 	}
 
 	bool isEmpty() { return (_scan == _copy) && (_copy == _end); }
@@ -361,6 +377,14 @@ public:
 	 */
 	uintptr_t getActivationCount() { return _activations; }
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+
+	void
+	assertScanspaceInvariant()
+	{
+		assertCopyspaceInvariant();
+		Debug_MM_true(_base <= _scan);
+		Debug_MM_true(_scan <= _copy);
+	}
 
 	/**
 	 * Constructor

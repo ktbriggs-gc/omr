@@ -72,11 +72,23 @@ public:
 	/* epochs are unrecorded until duration is set */
 	bool isRecorded(Epoch *epoch) { return (NULL != epoch) && (0 < epoch->tenureAllocationCeiling) && (0 < epoch->survivorAllocationCeiling); }
 
+	/* get a past (committed) or the current (uncommitted) epoch */
+	Epoch *getEpoch(uintptr_t index) { return &_history[(index < maxEpoch) ? index : (maxEpoch - 1)]; }
+
 	/* get the most recently committed epoch (or an empty epoch record if none committed yet in which case _last is <0) */
 	const Epoch *getEpoch() { return getEpoch((0 < _last) ? (uintptr_t)_last : 0); }
 
-	/* get a past (committed) or the current (uncommitted) epoch */
-	Epoch *getEpoch(uintptr_t index) { return &_history[(index < maxEpoch) ? index : (maxEpoch - 1)]; }
+	/* reserve tail of historic record to commit stats at end of current epoch */
+	Epoch *nextEpoch(uintptr_t next)
+	{
+		if (maxEpoch <= next) {
+			next = maxEpoch - 1;
+		}
+		if (_last < (intptr_t)next) {
+			_last = (intptr_t)next;
+		}
+		return &_history[next];
+	}
 
 	/* swap a new timestamp for start of current epoch */
 	uintptr_t epochStartTime(uintptr_t currentTimestamp)
@@ -85,16 +97,6 @@ public:
 		_timestamp = currentTimestamp;
 
 		return timestamp;
-	}
-
-	/* reserve tail of historic record to commit stats at end of current epoch */
-	Epoch *nextEpoch(uintptr_t next, bool last)
-	{
-		Debug_MM_true(last || (_last < (intptr_t)next));
-
-		_last = (intptr_t)((next < maxEpoch) ? next : (maxEpoch - 1));
-
-		return &_history[_last];
 	}
 
 	/* return most recently recorded epoch previous to input epoch */

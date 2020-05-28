@@ -282,7 +282,6 @@ public:
 		Debug_MM_true((NULL != work) && (NULL != work->base) && (0 < work->length));
 
 		VM_AtomicSupport::add(&_volume, volume(work));
-		VM_AtomicSupport::readBarrier();
 
 		/* append/prepend work to worklist */
 		work->next = NULL;
@@ -322,7 +321,6 @@ public:
 			Debug_MM_true((work == _tail) || (NULL != work->next));
 
 			VM_AtomicSupport::subtract(&_volume, volume(work));
-			VM_AtomicSupport::readBarrier();
 
 			_head = (work == _tail) ? (_tail = NULL) : work->next;
 			work->next = NULL;

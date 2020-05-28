@@ -222,7 +222,7 @@ MM_Evacuator::workThreadGarbageCollect(MM_EnvironmentStandard *env)
 	_scanStackFrame = NULL;
 
 	/* set scan options into initial conditions and start with minimal workspace release threshold */
-	_conditionFlags = _evacuatorScanOptions & static_mask;
+	_conditionFlags = _evacuatorScanOptions & initial_mask;
 	_workspaceReleaseThreshold = _controller->_minimumWorkspaceSize;
 
 	/* scan roots and remembered set and objects depending from these */
@@ -242,7 +242,7 @@ MM_Evacuator::workThreadGarbageCollect(MM_EnvironmentStandard *env)
 		/* java root clearer has repeated phases involving *deprecated* evacuateHeap() and its delegated scanClearable() leaves no unscanned work */
 		if (scanClearable()) {
 
-			/* other language runtimes should use evacuateObject() only in delegated scanClearble() and allow scanHeap() to complete each delegated phase */
+			/* runtimes should use evacuateObject() only in delegated scanClearable(), obviate evacuateHeap() call and allow scanHeap() here to complete each delegated phase */
 			 scanHeap();
 		}
 	}
@@ -1369,49 +1369,58 @@ MM_Evacuator::copyForward(MM_ForwardedHeader *forwardedHeader, fomrobject_t *ref
 #if defined(OMR_VALGRIND_MEMCHECK)
 		valgrindMempoolAlloc(_env->getExtensions(), (uintptr_t)forwardedAddress, forwardedLength);
 #endif /* defined(OMR_VALGRIND_MEMCHECK) */
+
 #if defined(EVACUATOR_DEBUG)
-		_delegate.debugValidateObject(forwardedHeader);
+		if (isDebugCopy()) {
+			_delegate.debugValidateObject(forwardedHeader);
+		}
 #endif /* defined(EVACUATOR_DEBUG) */
 
 		/* forwarding address set by this thread -- object will be evacuated to the copy head in copyspace */
 		memcpy(forwardedAddress, forwardedHeader->getObject(), originalLength);
 
+		/* copy the preserved fields from the forwarded header into the destination object */
+		forwardedHeader->fixupForwardedObject(forwardedAddress);
+
+		/* object model updates object age and finalizes copied object header */
+		uintptr_t objectAge = _objectModel->getPreservedAge(forwardedHeader);
+		uintptr_t nextAge = (survivor == region) ? (objectAge + 1) : STATE_NOT_REMEMBERED;
+		_objectModel->fixupForwardedObject(forwardedHeader, forwardedAddress, nextAge);
+
+#if defined(EVACUATOR_DEBUG)
+		if (isDebugCopy()) {
+			_delegate.debugValidateObject(forwardedAddress, forwardedLength);
+		}
+#endif /* defined(EVACUATOR_DEBUG) */
+
 		/* advance the copy head in the receiving copyspace and track scan/copy progress */
 		copyspace->advanceCopyHead(forwardedLength);
+
+		/* signal tail filling for outside region if whitespace is below minimal work release threshold */
+		if (copyspace != _whiteStackFrame[region]->asCopyspace()) {
+			uintptr_t whiteSize = copyspace->getWhiteSize();
+			if ((min_workspace_release > whiteSize) && (0 < whiteSize)) {
+				ConditionFlag tailFill = copyspaceTailFillCondition(region);
+				if (!isConditionSet(tailFill)) {
+					setCondition(tailFill, true);
+				}
+			}
+		}
 
 		/* synchronize stall condition with controller */
 		if (isConditionSet(stall) ^ _controller->areAnyEvacuatorsStalled()) {
 			setCondition(stall, !isConditionSet(stall));
 		}
 
-		/* update copy distribution metrics and check remainder whitespace in outside copyspaces */
-		if (copyspace == _whiteStackFrame[region]->asCopyspace()) {
-			_stackVolumeMetrics[inside] += forwardedLength;
-		} else {
-			_stackVolumeMetrics[outside] += forwardedLength;
-			if ((min_workspace_release > copyspace->getWhiteSize()) && (0 < copyspace->getWhiteSize())) {
-				if (!isConditionSet(copyspaceTailFillCondition(region))) {
-					setCondition(copyspaceTailFillCondition(region), true);
-				}
-			}
-		}
-
 		/* update copy volume metrics for reporting scan/copy progress */
+		_copiedBytesDelta[region] += forwardedLength;
 		if ((_copiedBytesDelta[survivor] + _copiedBytesDelta[tenure]) >= _copiedBytesReportingDelta) {
 			_controller->reportProgress(this, _copiedBytesDelta, &_scannedBytesDelta);
 		}
 
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-		Debug_MM_true(!isConditionSet(breadth_first_roots) || !isConditionSet(recursive_object));
-		/* update proximity and size metrics */
-		_stats->countCopyDistance((uintptr_t)referringSlotAddress, (uintptr_t)forwardedAddress);
-		_stats->countObjectSize(forwardedLength);
-		_conditionCounts[_conditionFlags & (uintptr_t)conditions_mask] += 1;
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
-
 		/* update scavenger stats */
-		uintptr_t objectAge = _objectModel->getPreservedAge(forwardedHeader);
-		if (isInTenure(forwardedAddress)) {
+		if (tenure == region) {
+			Debug_MM_true(isInTenure(forwardedAddress));
 			_stats->_tenureAggregateCount += 1;
 			_stats->_tenureAggregateBytes += originalLength;
 			_stats->getFlipHistory(0)->_tenureBytes[objectAge + 1] += forwardedLength;
@@ -1421,38 +1430,26 @@ MM_Evacuator::copyForward(MM_ForwardedHeader *forwardedHeader, fomrobject_t *ref
 				_stats->_tenureLOABytes += originalLength;
 			}
 #endif /* OMR_GC_LARGE_OBJECT_AREA */
-			_copiedBytesDelta[tenure] += forwardedLength;
 		} else {
 			Debug_MM_true(isInSurvivor(forwardedAddress));
 			_stats->_flipCount += 1;
 			_stats->_flipBytes += originalLength;
 			_stats->getFlipHistory(0)->_flipBytes[objectAge + 1] += forwardedLength;
-			_copiedBytesDelta[survivor] += forwardedLength;
 		}
 
-		/* update object age and finalize copied object header */
-		if (tenure == region) {
-			objectAge = STATE_NOT_REMEMBERED;
-		} else if (objectAge < OBJECT_HEADER_AGE_MAX) {
-			objectAge += 1;
-		}
-
-		/* copy the preserved fields from the forwarded header into the destination object */
-		forwardedHeader->fixupForwardedObject(forwardedAddress);
-		/* object model fixes the flags in the destination object */
-		_objectModel->fixupForwardedObject(forwardedHeader, forwardedAddress, objectAge);
+#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+		Debug_MM_true(!isConditionSet(breadth_first_roots) || !isConditionSet(recursive_object));
+		/* update proximity and size metrics in stats */
+		_stats->countCopyDistance((uintptr_t)referringSlotAddress, (uintptr_t)forwardedAddress);
+		_stats->countObjectSize(forwardedLength);
+		/* update condition and copy volume metrics */
+		_conditionCounts[_conditionFlags & (uintptr_t)conditions_mask] += 1;
+		_stackVolumeMetrics[(copyspace == _whiteStackFrame[region]->asCopyspace()) ? inside : outside] += forwardedLength;
+#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
 #if defined(EVACUATOR_DEBUG)
-		if (isDebugCopy()) {
-			OMRPORT_ACCESS_FROM_ENVIRONMENT(_env);
-			char className[32];
-			omrobjectptr_t parent = hasScanWork() ? _scanStackFrame->getActiveObject() : NULL;
-			omrtty_printf("%5lu %2lu %2lu:%c copy %3s; base:%lx; copy:%lx; end:%lx; free:%lx; %lx %s %lx -> %lx %lx\n", _controller->getEpoch()->gc, _controller->getEpoch()->epoch, _workerIndex,
-					hasScanWork() && ((uint8_t *)forwardedAddress >= _scanStackFrame->getBase()) && ((uint8_t *)forwardedAddress < _scanStackFrame->getEnd()) ? 'I' : 'O',
-					isInSurvivor(forwardedAddress) ? "new" : "old",	(uintptr_t)copyspace->getBase(), (uintptr_t)copyspace->getCopyHead(), (uintptr_t)copyspace->getEnd(), copyspace->getWhiteSize(),
-					(uintptr_t)parent, _delegate.debugGetClassname(forwardedAddress, className, 32), (uintptr_t)forwardedHeader->getObject(), (uintptr_t)forwardedAddress, forwardedLength);
-		}
-		_delegate.debugValidateObject(forwardedAddress);
+	} else if (isDebugCopy()) {
+		_delegate.debugValidateObject(forwardedHeader);
 #endif /* defined(EVACUATOR_DEBUG) */
 	}
 
@@ -2237,8 +2234,9 @@ MM_Evacuator::checkSurvivor()
 			object = (omrobjectptr_t)((uintptr_t)object + _objectModel->getSizeInBytesDeadObject(object));
 		}
 		if (isInSurvivor(object)) {
-			_delegate.debugValidateObject(object);
-			object = (omrobjectptr_t)((uintptr_t)object + _objectModel->getConsumedSizeInBytesWithHeader(object));
+			uintptr_t size = _objectModel->getConsumedSizeInBytesWithHeader(object);
+			_delegate.debugValidateObject(object, size);
+			object = (omrobjectptr_t)((uintptr_t)object + size);
 		}
 	}
 	omrtty_printf("%5lu %2lu %2lu:  survivor; end:%lx\n", _controller->getEpoch()->gc, _controller->getEpoch()->epoch, _workerIndex, (uintptr_t)object);
@@ -2257,7 +2255,8 @@ MM_Evacuator::checkTenure()
 			object = (omrobjectptr_t)((uintptr_t)object + _objectModel->getSizeInBytesDeadObject(object));
 		}
 		if (extensions->isOld(object)) {
-			_delegate.debugValidateObject(object);
+			uintptr_t size = _objectModel->getConsumedSizeInBytesWithHeader(object);
+			_delegate.debugValidateObject(object, size);
 			Debug_MM_true(_objectModel->getRememberedBits(object) < (uintptr_t)0xc0);
 			if (_objectModel->isRemembered(object)) {
 				if (!shouldRememberObject(object)) {
@@ -2267,7 +2266,7 @@ MM_Evacuator::checkTenure()
 				omrtty_printf("%5lu %2lu %2lu: !remember; object:%lx; flags:%lx\n", _controller->getEpoch()->gc, _controller->getEpoch()->epoch, _workerIndex, (uintptr_t)object, _objectModel->getObjectFlags(object));
 				Debug_MM_true(isAbortedCycle());
 			}
-			object = (omrobjectptr_t)((uintptr_t)object + _objectModel->getConsumedSizeInBytesWithHeader(object));
+			object = (omrobjectptr_t)((uintptr_t)object + size);
 		}
 	}
 	omrtty_printf("%5lu %2lu %2lu:    tenure; end:%lx\n", _controller->getEpoch()->gc, _controller->getEpoch()->epoch, _workerIndex, (uintptr_t)object);
