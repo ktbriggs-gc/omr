@@ -72,6 +72,19 @@ function(omr_add_library name)
 	if(opt_OUTPUT_NAME)
 		set_target_properties(${name} PROPERTIES OUTPUT_NAME "${opt_OUTPUT_NAME}")
 	endif()
+
+	if(NOT lib_type STREQUAL "INTERFACE")
+		if(OMR_WARNINGS_AS_ERRORS)
+			target_compile_options(${name} PRIVATE ${OMR_WARNING_AS_ERROR_FLAG})
+		endif()
+
+		if(OMR_ENHANCED_WARNINGS)
+			target_compile_options(${name} PRIVATE ${OMR_ENHANCED_WARNING_FLAG})
+		else()
+			target_compile_options(${name} PRIVATE ${OMR_BASE_WARNING_FLAGS})
+		endif()
+	endif()
+
 	if(opt_SHARED)
 		# split debug info if applicable. Note: omr_split_debug is responsible for checking OMR_SEPARATE_DEBUG_INFO
 		omr_process_split_debug(${name})
@@ -93,8 +106,80 @@ function(omr_add_executable name)
 	cmake_parse_arguments(opt "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
 	add_executable(${name} ${opt_UNPARSED_ARGUMENTS})
+
+	if(OMR_WARNINGS_AS_ERRORS)
+		target_compile_options(${name} PRIVATE ${OMR_WARNING_AS_ERROR_FLAG})
+	endif()
+
+	if(OMR_ENHANCED_WARNINGS)
+		target_compile_options(${name} PRIVATE ${OMR_ENHANCED_WARNING_FLAG})
+	else()
+		target_compile_options(${name} PRIVATE ${OMR_BASE_WARNING_FLAGS})
+	endif()
+
 	if(opt_OUTPUT_NAME)
 		set_target_properties(${name} PROPERTIES OUTPUT_NAME "${opt_OUTPUT_NAME}")
 	endif()
 	omr_process_split_debug(${name})
+endfunction()
+
+# omr_process_exports(<target> [symbol]...)
+# Performs appropriate processing to export symbols from a target.
+# Note: function is internaly guarded, so its safe to call multiple times.
+function(omr_process_exports target)
+	omr_assert(FATAL_ERROR TEST TARGET ${target} MESSAGE "omr_process_exports called on invalid target '${target}'")
+
+	# Check if we have already processed the exports.
+	get_target_property(has_processed ${target} OMR_EXPORTS_PROCESSED)
+
+	if((NOT has_processed) AND (COMMAND _omr_toolchain_process_exports))
+		_omr_toolchain_process_exports(${target})
+	endif()
+
+	set_target_properties(${target} PROPERTIES OMR_EXPORTS_PROCESSED TRUE)
+endfunction()
+
+# omr_add_exports(<target>)
+# Exports given symbols from a given target, and calls omr_process_exports.
+function(omr_add_exports target)
+	omr_assert(FATAL_ERROR TEST TARGET ${target} MESSAGE "omr_add_exports called on invalid target '${target}'")
+	set_property(TARGET ${target} APPEND PROPERTY EXPORTED_SYMBOLS ${ARGN})
+	omr_process_exports(${target})
+endfunction()
+
+# omr_process_split_debug(<target>)
+#   Process a target to generate split debug info if requested/required
+function(omr_process_split_debug target)
+	omr_assert(FATAL_ERROR TEST TARGET ${target} MESSAGE "omr_split_debug called on invalid target '${target}'")
+
+	# if we have already processed this target, skip it
+	get_target_property(is_split ${target} OMR_SPLIT_DEBUG_PROCESSED)
+	if(is_split)
+		return()
+	endif()
+
+	set_target_properties(${target} PROPERTIES OMR_SPLIT_DEBUG_PROCESSED TRUE)
+
+	get_target_property(target_type "${target}" TYPE)
+
+	# Only try making split debug info for exes/shared libs, and only if we have support from the toolchain
+	if((target_type MATCHES "EXECUTABLE|SHARED_LIBRARY") AND (COMMAND _omr_toolchain_separate_debug_symbols))
+		# Default to using config option.
+		set(use_split_debug ${OMR_SEPARATE_DEBUG_INFO})
+
+		# OMR_SEPARATE_DEBUG_INFO has no impact on Windows since it already
+		# uses separate .pdb files.
+		if(OMR_OS_WINDOWS)
+			set(use_split_debug FALSE)
+		endif()
+
+		# DDR requires separate debug info on OSX.
+		if(OMR_OS_OSX)
+			set(use_split_debug TRUE)
+		endif()
+
+		if(use_split_debug)
+			_omr_toolchain_separate_debug_symbols("${target}")
+		endif()
+	endif()
 endfunction()

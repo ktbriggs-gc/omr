@@ -5252,14 +5252,7 @@ static TR::Register *inlineSimpleAtomicUpdate(TR::Node *node, bool isAddOp, bool
          newValueReg);
 
    // We expect this store is usually successful, i.e., the following branch will not be taken
-   if (cg->comp()->target().cpu.id() >= TR_PPCgp)
-      {
-      generateConditionalBranchInstruction(cg, TR::InstOpCode::bne, PPCOpProp_BranchUnlikely, node, loopLabel, cndReg);
-      }
-   else
-      {
-      generateConditionalBranchInstruction(cg, TR::InstOpCode::bne, node, loopLabel, cndReg);
-      }
+   generateConditionalBranchInstruction(cg, TR::InstOpCode::bne, PPCOpProp_BranchUnlikely, node, loopLabel, cndReg);
 
    // We deviate from the VM helper here: no-store-no-barrier instead of always-barrier
    generateInstruction(cg, TR::InstOpCode::sync, node);
@@ -5914,15 +5907,9 @@ TR::Register *OMR::Power::TreeEvaluator::cmpsetEvaluator(
    generateTrg1ImmInstruction             (cg, TR::InstOpCode::li,     node, result, 1);
    generateTrg1MemInstruction             (cg, ldrOp,        node, tmpReg, ldMemRef);
    generateTrg1Src2Instruction            (cg, cmpOp,        node, condReg, tmpReg, cmpReg);
-   if (cg->comp()->target().cpu.id() >= TR_PPCgp)
-      generateConditionalBranchInstruction(cg, TR::InstOpCode::bne,    PPCOpProp_BranchUnlikely, node, endLabel, condReg);
-   else
-      generateConditionalBranchInstruction(cg, TR::InstOpCode::bne,    node, endLabel, condReg);
+   generateConditionalBranchInstruction   (cg, TR::InstOpCode::bne,    PPCOpProp_BranchUnlikely, node, endLabel, condReg);
    generateMemSrc1Instruction             (cg, stcOp,        node, stMemRef, repReg);
-   if (cg->comp()->target().cpu.id() >= TR_PPCgp)
-      generateConditionalBranchInstruction(cg, TR::InstOpCode::bne,    PPCOpProp_BranchUnlikely, node, endLabel, cr0);
-   else
-      generateConditionalBranchInstruction(cg, TR::InstOpCode::bne,    node, endLabel, cr0);
+   generateConditionalBranchInstruction   (cg, TR::InstOpCode::bne,    PPCOpProp_BranchUnlikely, node, endLabel, cr0);
    generateTrg1ImmInstruction             (cg, TR::InstOpCode::li,     node, result, 0);
    generateDepLabelInstruction            (cg, TR::InstOpCode::label,  node, endLabel, deps);
 
@@ -6063,17 +6050,25 @@ TR::Register * OMR::Power::TreeEvaluator::ibyteswapEvaluator(TR::Node *node, TR:
    else
       {
       TR::Register *srcRegister = cg->evaluate(firstChild);
-      TR::Register *tmp1Register = cg->allocateRegister();
 
-      generateTrg1Src1Imm2Instruction(cg, TR::InstOpCode::rlwinm, node, tgtRegister, srcRegister, 8, 0x00000000ff);
-      generateTrg1Src1Imm2Instruction(cg, TR::InstOpCode::rlwinm, node, tmp1Register, srcRegister, 8, 0x0000ff0000);
-      generateTrg1Src2Instruction(cg, TR::InstOpCode::OR, node, tgtRegister, tgtRegister, tmp1Register);
-      generateTrg1Src1Imm2Instruction(cg, TR::InstOpCode::rlwinm, node, tmp1Register, srcRegister, 24, 0x000000ff00);
-      generateTrg1Src2Instruction(cg, TR::InstOpCode::OR, node, tgtRegister, tgtRegister, tmp1Register);
-      generateTrg1Src1Imm2Instruction(cg, TR::InstOpCode::rlwinm, node, tmp1Register, srcRegister, 24, 0x00ff000000);
-      generateTrg1Src2Instruction(cg, TR::InstOpCode::OR, node, tgtRegister, tgtRegister, tmp1Register);
+      if (cg->comp()->target().cpu.id() >= TR_PPCp10)
+         {
+         generateTrg1Src1Instruction(cg, TR::InstOpCode::brw, node, tgtRegister, srcRegister);
+         }
+      else
+         {
+         TR::Register *tmp1Register = cg->allocateRegister();
 
-      cg->stopUsingRegister(tmp1Register);
+         generateTrg1Src1Imm2Instruction(cg, TR::InstOpCode::rlwinm, node, tgtRegister, srcRegister, 8, 0x00000000ff);
+         generateTrg1Src1Imm2Instruction(cg, TR::InstOpCode::rlwinm, node, tmp1Register, srcRegister, 8, 0x0000ff0000);
+         generateTrg1Src2Instruction(cg, TR::InstOpCode::OR, node, tgtRegister, tgtRegister, tmp1Register);
+         generateTrg1Src1Imm2Instruction(cg, TR::InstOpCode::rlwinm, node, tmp1Register, srcRegister, 24, 0x000000ff00);
+         generateTrg1Src2Instruction(cg, TR::InstOpCode::OR, node, tgtRegister, tgtRegister, tmp1Register);
+         generateTrg1Src1Imm2Instruction(cg, TR::InstOpCode::rlwinm, node, tmp1Register, srcRegister, 24, 0x00ff000000);
+         generateTrg1Src2Instruction(cg, TR::InstOpCode::OR, node, tgtRegister, tgtRegister, tmp1Register);
+
+         cg->stopUsingRegister(tmp1Register);
+         }
       cg->decReferenceCount(firstChild);
       }
 
