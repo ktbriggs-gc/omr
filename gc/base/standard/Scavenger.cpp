@@ -744,9 +744,6 @@ MM_Scavenger::mergeGCStatsBase(MM_EnvironmentBase *env, MM_ScavengerStats *final
 	finalGCStats->_flipCount += scavStats->_flipCount;
 	finalGCStats->_flipBytes += scavStats->_flipBytes;
 	finalGCStats->_hashBytes += scavStats->_hashBytes;
-	for (uintptr_t i = 0; i < 3; i += 1) {
-		finalGCStats->_cycleVolumeMetrics[i] += scavStats->_cycleVolumeMetrics[i];
-	}
 	finalGCStats->_failedTenureCount += scavStats->_failedTenureCount;
 	finalGCStats->_failedTenureBytes += scavStats->_failedTenureBytes;
 	finalGCStats->_failedTenureLargest = OMR_MAX(scavStats->_failedTenureLargest,
@@ -2197,12 +2194,11 @@ MM_Scavenger::getNextScanCache(MM_EnvironmentStandard *env)
 		return cache;
 	}
 
-#if defined(J9MODRON_TGC_PARALLEL_STATISTICS)
-	env->_scavengerStats._acquireScanListCount += 1;
-#endif /* J9MODRON_TGC_PARALLEL_STATISTICS */
-
 #if defined(OMR_SCAVENGER_TRACE) || defined(J9MODRON_TGC_PARALLEL_STATISTICS)
 	OMRPORT_ACCESS_FROM_OMRPORT(env->getPortLibrary());
+#if defined(J9MODRON_TGC_PARALLEL_STATISTICS)
+	uint64_t waitStartTime = 0;
+#endif /* J9MODRON_TGC_PARALLEL_STATISTICS */
 #endif /* OMR_SCAVENGER_TRACE || J9MODRON_TGC_PARALLEL_STATISTICS */
 
  	while (!doneFlag && !shouldAbortScanLoop(env)) {
@@ -2227,14 +2223,21 @@ MM_Scavenger::getNextScanCache(MM_EnvironmentStandard *env)
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 				env->_scavengerStats.countWorkPacketSize(((uintptr_t)cache->cacheAlloc - (uintptr_t)cache->scanCurrent), _maximumWorkspaceSize);
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+#if defined(J9MODRON_TGC_PARALLEL_STATISTICS)
+				if (0 < waitStartTime) {
+					env->_scavengerStats.addToWorkStallTime(waitStartTime, omrtime_hires_clock());
+				}
+#endif /* J9MODRON_TGC_PARALLEL_STATISTICS */
 				return cache;
 			}
 		}
 
 #if defined(J9MODRON_TGC_PARALLEL_STATISTICS)
-		uint64_t waitEndTime, waitStartTime;
-		waitStartTime = omrtime_hires_clock();
+		if (0 == waitStartTime) {
+			waitStartTime = omrtime_hires_clock();
+		}
 #endif /* J9MODRON_TGC_PARALLEL_STATISTICS */
+
 		omrthread_monitor_enter(_scanCacheMonitor);
 		_waitingCount += 1;
 
@@ -2250,6 +2253,7 @@ MM_Scavenger::getNextScanCache(MM_EnvironmentStandard *env)
 			} else {
 				while((0 == _cachedEntryCount) && (doneIndex == _doneIndex) && !shouldAbortScanLoop(env)) {
 					flushBuffersForGetNextScanCache(env);
+					env->_scavengerStats._acquireScanListCount += 1;
 					omrthread_monitor_wait(_scanCacheMonitor);
 				}
 			}
@@ -2262,15 +2266,11 @@ MM_Scavenger::getNextScanCache(MM_EnvironmentStandard *env)
 		}
 
 		omrthread_monitor_exit(_scanCacheMonitor);
-#if defined(J9MODRON_TGC_PARALLEL_STATISTICS)
-		waitEndTime = omrtime_hires_clock();
-		if (doneIndex != _doneIndex) {
-			env->_scavengerStats.addToCompleteStallTime(waitStartTime, waitEndTime);
-		} else {
-			env->_scavengerStats.addToWorkStallTime(waitStartTime, waitEndTime);
-		}
-#endif /* J9MODRON_TGC_PARALLEL_STATISTICS */
 	}
+
+#if defined(J9MODRON_TGC_PARALLEL_STATISTICS)
+	env->_scavengerStats.addToCompleteStallTime(waitStartTime, omrtime_hires_clock());
+#endif /* J9MODRON_TGC_PARALLEL_STATISTICS */
 
 	return cache;
 }
@@ -4173,7 +4173,10 @@ MM_Scavenger::masterThreadGarbageCollect(MM_EnvironmentBase *envBase, MM_Allocat
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 		reportCollectionStats(env);
-		Assert_MM_true(!_extensions->isEvacuatorEnabled() || (isAborting() == !scavengeCompletedSuccessfully(env)));
+		if (_extensions->isEvacuatorEnabled()) {
+			Assert_MM_true(isAborting() == !scavengeCompletedSuccessfully(env));
+			assertGenerationalInvariant(env);
+		}
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
 		if(scavengeCompletedSuccessfully(env)) {

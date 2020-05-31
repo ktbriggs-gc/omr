@@ -74,7 +74,7 @@ private:
 	const MM_EvacuatorScanspace * const _stackCeiling;	/* normative limit determines maximal depth of scan stack (may be below top) */
 	const MM_EvacuatorScanspace * _stackLimit;		/* operational limit is set to ceiling for full stack scanning or bottom to force flushing to outside copyspaces */
 	MM_EvacuatorScanspace * _scanStackFrame;		/* points to active stack frame, NULL if scan stack empty */
-	MM_EvacuatorScanspace * _whiteStackFrame[2];	/* pointers to stack frames that hold survivor/tenure inside whitespace */
+	MM_EvacuatorScanspace * _whiteStackFrame[2];	/* pointers to stack frames that hold reserved survivor/tenure inside whitespace */
 
 	MM_EvacuatorCopyspace * const _copyspace;		/* pointers to survivor/tenure outside copyspaces that receive outside copy */
 	MM_EvacuatorWhitelist * const _whiteList;		/* pointers to survivor/tenure whitelists of whitespace fragments */
@@ -83,7 +83,6 @@ private:
 	MM_EvacuatorFreelist _freeList;					/* LIFO queue of empty workspaces */
 	MM_EvacuatorWorklist _workList;					/* FIFO queue of distributable survivor/tenure workspaces */
 
-	uintptr_t _stackVolumeMetrics[3];				/* bytes copied inside, outside, bytes scanned since last transition from empty stack */
 	uintptr_t _copyspaceOverflow[2];				/* volume of copy overflowing outside copyspaces, reset when outside copyspace is refreshed */
 	uint8_t *_heapBounds[3][2];						/* lower and upper bounds for nursery semispaces and tenure space */
 
@@ -99,21 +98,27 @@ public:
  * Function members
  */
 private:
+	/* evacuation workflow: evacuate -> survivor | tenure */
 	void scanRoots();
 	void scanRemembered();
 	void scanHeap();
 	bool scanClearable();
 	void scanComplete();
 
+	/* scan workflow (huff): (copyspace | worklist:workspace* ) -> stack:scanspace* */
+	MMINLINE bool getWork();
+	MMINLINE void findWork();
+
 	MMINLINE void clear();
-	MMINLINE void scan();
 	MMINLINE void pull(MM_EvacuatorWorklist *worklist);
 	MMINLINE void pull(MM_EvacuatorCopyspace *copyspace);
+
+	void scan();
 	MMINLINE GC_ObjectScanner *scanner(const bool advanceScanHead = false);
 	MMINLINE void chain(omrobjectptr_t linkedObject, const uintptr_t selfReferencingSlotOffset, const uintptr_t worklistVolumeCeiling);
+	MMINLINE MM_EvacuatorScanspace *top();
 	MMINLINE MM_EvacuatorScanspace *next(MM_EvacuatorScanspace *nextFrame, const Region region);
 	MMINLINE void push(MM_EvacuatorScanspace * const nextFrame);
-	MMINLINE MM_EvacuatorScanspace *top();
 	MMINLINE void copy();
 	MMINLINE void pop();
 
@@ -121,10 +126,19 @@ private:
 	MMINLINE MM_EvacuatorWhitespace *refreshInsideWhitespace(const Region region, const uintptr_t slotObjectSizeAfterCopy);
 	MMINLINE omrobjectptr_t copyForward(MM_ForwardedHeader *forwardedHeader, fomrobject_t *referringSlotAddress, MM_EvacuatorCopyspace * const copyspace, const uintptr_t originalLength, const uintptr_t forwardedLength);
 
-	MM_EvacuatorCopyspace *reserveOutsideCopyspace(Region *region, const uintptr_t slotObjectSizeAfterCopy, bool useLargeCopyspace);
-	MMINLINE omrobjectptr_t copyOutside(Region region, MM_ForwardedHeader *forwardedHeader, fomrobject_t *referringSlotAddress, const uintptr_t slotObjectSizeBeforeCopy, const uintptr_t slotObjectSizeAfterCopy, const bool isSplitableArray);
+	omrobjectptr_t copyOutside(Region region, MM_ForwardedHeader *forwardedHeader, fomrobject_t *referringSlotAddress, const uintptr_t slotObjectSizeBeforeCopy, const uintptr_t slotObjectSizeAfterCopy, const bool isSplitableArray);
+	MMINLINE MM_EvacuatorCopyspace *reserveOutsideCopyspace(Region *region, const uintptr_t slotObjectSizeAfterCopy, bool useLargeCopyspace);
 	MMINLINE bool shouldRefreshCopyspace(const Region region, const uintptr_t slotObjectSizeAfterCopy, const uintptr_t copyspaceRemainder) const;
 
+	/* copy workflow (puff): stack:scanspace* -> copyspace -> worklist:workspace* */
+	MMINLINE uintptr_t adjustWorkReleaseThreshold();
+	MMINLINE void addWork(MM_EvacuatorCopyspace *copyspace);
+	MMINLINE void splitPointerArrayWork(omrobjectptr_t pointerArray);
+	MMINLINE bool isSplitArrayWorkspace(const MM_EvacuatorWorkspace *work) const;
+	MMINLINE void flushForWaitState();
+	MMINLINE void gotWork();
+
+	/* workflow conditions regulate switching copy between inside/outside scan/copyspaces, inside copy distance, workspace release threshold, ... */
 	MMINLINE void setCondition(ConditionFlag condition, bool value);
 	MMINLINE ConditionFlag copyspaceTailFillCondition(Region region) const;
 	MMINLINE bool isForceOutsideCopyCondition(Region region) const;
@@ -132,30 +146,25 @@ private:
 	MMINLINE bool isDistributeWorkCondition() const;
 	MMINLINE bool isBreadthFirstCondition() const;
 
-	MMINLINE bool getWork();
-	MMINLINE void findWork();
-	MMINLINE void gotWork();
-	MMINLINE void addWork(MM_EvacuatorCopyspace *copyspace);
-	MMINLINE void splitPointerArrayWork(omrobjectptr_t pointerArray);
-	MMINLINE bool isSplitArrayWorkspace(const MM_EvacuatorWorkspace *work) const;
-	MMINLINE uintptr_t adjustWorkReleaseThreshold();
-	MMINLINE void flushForWaitState();
-
+	/* object geometry */
 	MMINLINE bool isSplitablePointerArray(MM_ForwardedHeader *forwardedHeader, uintptr_t objectSizeInBytes);
 	MMINLINE bool isLargeObject(const uintptr_t objectSizeInBytes) const;
 	MMINLINE bool isHugeObject(const uintptr_t objectSizeInBytes) const;
 
+	/* object age */
 	MMINLINE void flushRememberedSet();
 	MMINLINE bool isNurseryAge(uintptr_t objectAge) const;
 	MMINLINE bool setRememberedState(omrobjectptr_t object, uintptr_t rememberedState);
 
-	MMINLINE void updateCycleVolumeMetrics();
+	/* generational cycle */
 	MMINLINE void setAbortedCycle();
 	MMINLINE bool isAbortedCycle();
 
-	MMINLINE void debugStack(const char *stackOp, bool treatAsWork = false);
 
 #if defined(J9MODRON_TGC_PARALLEL_STATISTICS) || defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+#if defined(EVACUATOR_DEBUG)
+	MMINLINE void debugStack(const char *stackOp, bool treatAsWork = false);
+#endif /* defined(EVACUATOR_DEBUG) */
 	MMINLINE uint64_t startWaitTimer(const char *tag);
 	MMINLINE void endWaitTimer(uint64_t waitStartTime);
 	MMINLINE uint64_t cycleMicros() { OMRPORT_ACCESS_FROM_ENVIRONMENT(_env); return omrtime_hires_delta(_env->getExtensions()->incrementScavengerStats._startTime, omrtime_hires_clock(), OMRPORT_TIME_DELTA_IN_MICROSECONDS); }
@@ -495,8 +504,6 @@ public:
 		_copiedBytesDelta[survivor] = _copiedBytesDelta[tenure] = 0;
 		_copyspaceOverflow[survivor] = _copyspaceOverflow[tenure] = 0;
 		_whiteStackFrame[survivor] = _whiteStackFrame[tenure] = NULL;
-		_stackVolumeMetrics[inside] = _stackVolumeMetrics[outside] = 0;
-		_stackVolumeMetrics[scanned] = 0;
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 		memset(_conditionCounts, 0, sizeof(_conditionCounts));

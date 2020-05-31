@@ -64,7 +64,6 @@ public:
 	uintptr_t _flipCount;
 	uintptr_t _flipBytes;
 	uintptr_t _hashBytes;
-	uintptr_t _cycleVolumeMetrics[3];
 	uintptr_t _tenureAggregateCount;
 	uintptr_t _tenureAggregateBytes;
 #if defined(OMR_GC_LARGE_OBJECT_AREA)	

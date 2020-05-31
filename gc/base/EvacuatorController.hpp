@@ -31,7 +31,6 @@
 
 #include "AtomicSupport.hpp"
 #include "Collector.hpp"
-#include "CollectorLanguageInterface.hpp"
 #include "EnvironmentStandard.hpp"
 #include "Evacuator.hpp"
 #include "EvacuatorBase.hpp"
@@ -47,25 +46,12 @@ class MM_MemorySubSpace;
 class MM_MemorySubSpaceSemiSpace;
 
 /**
- * Whitespace (MM_EvacuatorWhitespace) is free space for copying and may be free or bound to a
- * whitelist (MM_EvacuatorWhitelist) or to a scan or copy space (MM_EvacuatorScanspace, MM_EvacuatorCopyspace).
- * The whitelist is a priority queue, presenting largest available whitespace on top. Allocation
- * requests for whitespace are always satisfied by the whitelist if the top whitespace can accommodate,
- * new blocks of whitespace are allocated from survivor and tenure memory subspaces as a last resort.
- *
- * Work is unscanned copy. Each evacuator (MM_Evacuator) maintains a stack of scanspaces
- * for hierarchical (inside) copying and two copyspaces (survivor and tenure) to copy breadth-first
- * objects that are not copied inside the current scanspace. Work is released from outside copyspaces
- * when its size exceeds a threshold imposed by the controller (an instance of this class).
- *
  * The controller periodically sums copied/scanned byte counts over all evacuators to obtain epochal
- * information about progress of evacuation. Epochal copied/scanned page counts are used to determine
- * evacuator operating parameters for each sampling epoch, including whitespace allocation size for
- * refreshing inside/outside scan/copyspaces and unscanned copy size threshold for releasing work
- * from copyspaces to evacuator work queues.
+ * information about progress of evacuation and asserts if the aggregate volume of material copied is
+ * not equal to the aggregate volume scanned at the the of each evacuation stage (roots, clearable, ..)
+ * and at the end of the generational collection cycle.
  *
- * All sizes and lengths are expressed in bytes in controller, evacuator, white/copy/scan
- * space contexts.
+ * All sizes and lengths are expressed in bytes in controller, evacuator, white/copy/scanspace contexts.
  */
 class MM_EvacuatorController : public MM_Collector
 {
@@ -79,11 +65,11 @@ private:
 
 	typedef MM_Evacuator *EvacuatorPointer;
 
-	uintptr_t _evacuatorCount;							/* number of gc threads that will participate in collection */
 	const uintptr_t _maxGCThreads;						/* fixed for life of vm, never <_evacuatorCount */
 	EvacuatorPointer * const _evacuatorTask;			/* array of pointers to instantiated evacuators */
 	omrthread_monitor_t	_controllerMutex;				/* synchronize evacuator work distribution and end of scan cycle */
 	omrthread_monitor_t	_reporterMutex;					/* synchronize collection of epochal records within gc cycle */
+	volatile uintptr_t _evacuatorCount;					/* number of gc threads that will participate in collection */
 	volatile uintptr_t * const _boundEvacuatorBitmap;	/* maps evacuator threads that have been dispatched and bound to an evacuator instance */
 	volatile uintptr_t * const _stalledEvacuatorBitmap;	/* maps evacuator threads that are stalled (waiting for work) */
 	volatile uintptr_t * const _resumingEvacuatorBitmap;/* maps evacuator threads that are resuming or completing scan cycle after stalling */
@@ -167,26 +153,29 @@ private:
 	/* calculate whitespace allocation size considering evacuator's production scaling factor */
 	MMINLINE uintptr_t calculateOptimalWhitespaceSize(MM_Evacuator::Region region);
 
+	/* calculate the number of active words in the evacuator bitmaps */
+	MMINLINE uintptr_t countEvacuatorBitmapWords(uintptr_t *tailMask, uintptr_t evacuatorCount);
+
+	/* calculate the number of active words in the evacuator bitmaps */
+	MMINLINE uintptr_t countEvacuatorBitmapWords(uintptr_t *tailMask);
+
+	/* fill evacuator bitmap with all 1s (reliable only when caller holds controller mutex) */
+	MMINLINE void fillEvacuatorBitmap(volatile uintptr_t * const bitmap, uintptr_t evacuatorCount);
+
+	/* fill evacuator bitmap with all 1s (reliable only when caller holds controller mutex) */
+	MMINLINE void fillEvacuatorBitmap(volatile uintptr_t * const bitmap);
+
 	/* test evacuator bitmap for all 0s (reliable only when caller holds controller mutex) */
 	MMINLINE bool isEvacuatorBitmapEmpty(volatile uintptr_t * const bitmap);
 
 	/* test evacuator bitmap for all 1s (reliable only when caller holds controller mutex) */
 	MMINLINE bool isEvacuatorBitmapFull(volatile uintptr_t * const bitmap);
 
-	/* fill evacuator bitmap with all 1s (reliable only when caller holds controller mutex) */
-	MMINLINE void fillEvacuatorBitmap(volatile uintptr_t * const bitmap);
-
 	/* set evacuator bit in evacuator bitmap */
 	MMINLINE uintptr_t setEvacuatorBit(uintptr_t evacuatorIndex, volatile uintptr_t * const bitmap);
 
 	/* clear evacuator bit in evacuator bitmap */
 	MMINLINE void clearEvacuatorBit(uintptr_t evacuatorIndex, volatile uintptr_t * const bitmap);
-
-	/* calculate the number of active words in the evacuator bitmaps */
-	MMINLINE uintptr_t countEvacuatorBitmapWords(uintptr_t *tailWords);
-
-	/* assert that aggregate volumes of work copied and scanned are equal unless aborting */
-	void assertGenerationalInvariant(MM_EnvironmentStandard *env);
 
 	/* get bit mask for evacuator bit as aligned in evacuator bitmap */
 	uintptr_t
@@ -234,6 +223,9 @@ protected:
 	 * @param env environment for calling (master) thread
 	 */
 	virtual void masterSetupForGC(MM_EnvironmentStandard *env);
+
+	/* Assert that aggregate volumes of work copied and scanned are equal unless aborting */
+	void assertGenerationalInvariant(MM_EnvironmentStandard *env);
 
 public:
 	MM_GCExtensionsBase * const getExtensions() { return _extensions; }
@@ -346,25 +338,28 @@ public:
 	void unbindWorker(MM_EnvironmentStandard *env);
 
 	/**
-	 * Calculate threshold for releasing workspaces from outside copyspaces considering current aggregate
-	 * volume of queued work and evacuator thread bandwidth.
-	 *
-	 * @param evacuatorVolumeOfWork the amount (bytes) of unscanned work in caller's worklist
-	 * @return the minimum number of unscanned bytes to accumulate in outside copyspaces before releasing a workspace
-	 */
-	uintptr_t calculateOptimalWorkspaceSize(uintptr_t evacuatorVolumeOfWork);
-
-	/**
 	 * Evacuators acquire/release exclusive controller access to notify stalled evacuators of work or to poll/pull work from running evacuators
 	 */
 	void acquireController() { omrthread_monitor_enter(_controllerMutex); }
 
 	/**
-	 * Evacuator will stall and wait on controller if unable to find local scan work
+	 * Evacuator calls controller when waiting for work or to synchronize with completing evacuators. All
+	 * evacuator threads are synchronized when they are all stalled and have empty worklists. This join point
+	 * marks the end of a heap scan. At this point the sums of the number of bytes copied and bytes scanned by
+	 * each evacuator must be equal unless the scan is aborting. Any found work is discarded if any evacuator
+	 * has raised an abort condition.
 	 *
-	 * Caller must have acquired controller mutex before and release it after the call
+	 * @param worker the evacuator that is waiting for work
+	 * @return true if worker must wait for work
 	 */
-	void waitForWork() { omrthread_monitor_wait(_controllerMutex); }
+	bool isWaitingForWork(MM_Evacuator *worker);
+
+	/**
+	 * Atomically test pending notification flag.
+	 *
+	 * @return true if there is a notification request pending.
+	 */
+	bool isNotififyOfWorkPending() { return 1 == VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 1); }
 
 	/*
 	 * Evacuators with distributable work will notify controller at the instant that a stall condition is
@@ -376,8 +371,6 @@ public:
 	 * @param worker the evacuator that is notifying
 	 */
 	void notifyOfWork(MM_Evacuator *evacuator);
-
-	bool isNotififyOfWorkPending() { return 1 == VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 1); }
 
 	void releaseController() { omrthread_monitor_exit(_controllerMutex); }
 
@@ -400,18 +393,6 @@ public:
 	 * @return true if evacuator's volume of work is greater than quota
 	 */
 	bool hasFulfilledWorkQuota(uintptr_t workQuantumVolume, uintptr_t volumeOfWork) const { return (volumeOfWork > getWorkNotificationQuota(workQuantumVolume)); }
-
-	/**
-	 * Evacuator calls controller when waiting for work or to synchronize with completing evacuators. All
-	 * evacuator threads are synchronized when they are all stalled and have empty worklists. This join point
-	 * marks the end of a heap scan. At this point the sums of the number of bytes copied and bytes scanned by
-	 * each evacuator must be equal unless the scan is aborting. Any found work is discarded if any evacuator
-	 * has raised an abort condition.
-	 *
-	 * @param worker the evacuator that is waiting for work
-	 * @return true if worker must wait for work
-	 */
-	bool isWaitingForWork(MM_Evacuator *worker);
 
 	/**
 	 * Evacuator calls this to determine whether there is scan work remaining in any evacuator's queue. If
@@ -515,11 +496,11 @@ public:
 	 */
 	MM_EvacuatorController(MM_EnvironmentBase *env)
 		: MM_Collector()
-		, _evacuatorCount(0)
 		, _maxGCThreads(((MM_ParallelDispatcher *)env->getExtensions()->dispatcher)->threadCountMaximum())
 		, _evacuatorTask(allocateEvacuatorArray(env, _maxGCThreads))
 		, _controllerMutex(NULL)
 		, _reporterMutex(NULL)
+		, _evacuatorCount(0)
 		, _boundEvacuatorBitmap(allocateEvacuatorBitmap(env, _maxGCThreads))
 		, _stalledEvacuatorBitmap(allocateEvacuatorBitmap(env, _maxGCThreads))
 		, _resumingEvacuatorBitmap(allocateEvacuatorBitmap(env, _maxGCThreads))

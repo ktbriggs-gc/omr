@@ -25,13 +25,11 @@
 
 #undef EVACUATOR_DEBUG
 #undef EVACUATOR_DEBUG_TRACE
-#define EVACUATOR_DEBUG_ALWAYS
+#undef EVACUATOR_DEBUG_ALWAYS
 
 #if defined(EVACUATOR_DEBUG) && defined(EVACUATOR_DEBUG_ALWAYS)
 #error "EVACUATOR_DEBUG and EVACUATOR_DEBUG_ALWAYS are mutually exclusive"
 #endif /* defined(EVACUATOR_DEBUG) && defined(EVACUATOR_DEBUG_ALWAYS) */
-
-#include "omr.h"
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 #define OMR_SCAVENGER_TRACK_COPY_DISTANCE
@@ -43,22 +41,19 @@
 #endif /* defined(EVACUATOR_DEBUG_TRACE) */
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
+#include "omr.h"
 #if defined(EVACUATOR_DEBUG)
 #include "omrgcconsts.h"
 #include "ModronAssertions.h"
-
-#include "Math.hpp"
-
-/* default debug flags */
-#if defined(EVACUATOR_DEBUG)
-#define EVACUATOR_DEBUG_DEFAULT_FLAGS 0
-#else
-#define EVACUATOR_DEBUG_DEFAULT_FLAGS 0
 #endif /* defined(EVACUATOR_DEBUG) */
 
-/* delegate can define additional flags above 0x10000 */
-#define EVACUATOR_DEBUG_DELEGATE_BASE 0x10000
+#include "BaseNonVirtual.hpp"
+#include "GCExtensionsBase.hpp"
+#if defined(EVACUATOR_DEBUG)
+#include "Math.hpp"
+#endif /* defined(EVACUATOR_DEBUG) */
 
+#if defined(EVACUATOR_DEBUG)
 #define Debug_MM_true(assertion) Assert_MM_true(assertion)
 #define Debug_MM_true1(env, assertion, format, arg) Assert_GC_true_with_message(env, assertion, format, arg)
 #define Debug_MM_true2(env, assertion, format, arg1, arg2) Assert_GC_true_with_message2(env, assertion, format, arg1, arg2)
@@ -71,11 +66,6 @@
 #define Debug_MM_true3(env, assertion, format, arg1, arg2, arg3)
 #define Debug_MM_true4(env, assertion, format, arg1, arg2, arg3, arg4)
 #endif /* defined(EVACUATOR_DEBUG) */
-
-#include "BaseNonVirtual.hpp"
-#include "GCExtensionsBase.hpp"
-
-#define NOINLINE
 
 /* base debug flags (evacuatorTraceOptions) */
 #define EVACUATOR_DEBUG_END 1
@@ -91,6 +81,9 @@
 #define EVACUATOR_DEBUG_BACKOUT 1024
 #define EVACUATOR_DEBUG_DELEGATE 2048
 #define EVACUATOR_DEBUG_HEAPCHECK 4096
+
+/* delegate can define additional flags above 0x10000 */
+#define EVACUATOR_DEBUG_DELEGATE_BASE 0x10000
 
 class MM_EvacuatorBase : public MM_BaseNonVirtual
 {
@@ -260,14 +253,14 @@ public:
 	static uintptr_t
 	selectedScanOptions(MM_GCExtensionsBase *extensions)
 	{
-		uintptr_t scanOptions = extensions->evacuatorScanOptions;
+		uintptr_t scanOptions = extensions->evacuatorScanOptions & (uintptr_t)options_mask;
 
 		/* minimum stack depth forces breadth-first always and breadth-first always forces breadth-first roots */
 		if ((extensions->evacuatorMaximumStackDepth <= MM_EvacuatorBase::min_scan_stack_depth) || isScanOptionSelected(extensions, breadth_first_always)) {
 			scanOptions |= (breadth_first_always | breadth_first_roots);
 		}
 
-		return scanOptions & (uintptr_t)options_mask;
+		return scanOptions;
 	}
 
 	/* Note: any address in process space will do for reference slot size calculation */

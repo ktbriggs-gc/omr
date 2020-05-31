@@ -209,7 +209,6 @@ MM_ScavengerStats::clear(bool firstIncrement)
 	memset(_copy_cachesize_counts, 0, sizeof(_copy_cachesize_counts));
 	memset(_work_packetsize_counts, 0, sizeof(_work_packetsize_counts));
 	memset(_object_volume_counts, 0, sizeof(_object_volume_counts));
-	memset(_cycleVolumeMetrics, 0, sizeof(_cycleVolumeMetrics));
 }
 
 bool
