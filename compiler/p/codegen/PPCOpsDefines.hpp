@@ -304,6 +304,7 @@ FORMAT_VRT_VRA_VRB,
 // |      | XT       | RA       | RB       |                 | XT |
 // | 0    | 6        | 11       | 16       | 21              | 31 |
 // +------+----------+----------+----------+-----------------+----+
+FORMAT_XT_RA_RB,
 FORMAT_XT_RA_RB_MEM,
 
 // Format for instructions with an XT field encoding the target VSX register and XA and XB fields
@@ -699,6 +700,7 @@ FORMAT_RS_DS_RA,
 // |      | RS       | RA       | RB       |                      |
 // | 0    | 6        | 11       | 16       | 21                   |
 // +------+----------+----------+----------+----------------------+
+FORMAT_RS_RA_RB,
 FORMAT_RS_RA_RB_MEM,
 
 // Format for instructions with an FRS field encoding the source FP register, and RA and RB fields
@@ -726,6 +728,7 @@ FORMAT_VRS_RA_RB_MEM,
 // |      | XS       | RA       | RB       |                 | XS |
 // | 0    | 6        | 11       | 16       | 21              | 31 |
 // +------+----------+----------+----------+-----------------+----+
+FORMAT_XS_RA_RB,
 FORMAT_XS_RA_RB_MEM,
 
 // Format for instructions with an RT field encoding the target register, RA and RB fields encoding
@@ -746,12 +749,9 @@ FORMAT_RT_RA_RB_BFC
 #define PPCOpProp_ReadsCarryFlag    0x00000008
 #define PPCOpProp_TMAbort           0x00000010
 #define PPCOpProp_BranchOp          0x00000040
-#define PPCOpProp_CRLogical         0x00000080
 #define PPCOpProp_DoubleFP          0x00000100
 #define PPCOpProp_SingleFP          0x00000200
 #define PPCOpProp_UpdateForm        0x00000400
-#define PPCOpProp_AltFormat         0x00000800  // use alternate instruction format
-#define PPCOpProp_AltFormatx        0x00001000  // use alternate instruction format
 #define PPCOpProp_IsRecordForm      0x00002000
 #define PPCOpProp_IsLoad            0x00004000
 #define PPCOpProp_IsStore           0x00008000
@@ -760,9 +760,7 @@ FORMAT_RT_RA_RB_BFC
 #define PPCOpProp_SetsCtr           0x00040000
 #define PPCOpProp_UsesCtr           0x00080000
 #define PPCOpProp_DWord             0x00100000
-#define PPCOpProp_UseMaskEnd        0x00200000  // ME or MB should be encoded
 #define PPCOpProp_IsSync            0x00400000
-#define PPCOpProp_IsRotateOrShift   0x00800000
 #define PPCOpProp_CompareOp         0x01000000
 #define PPCOpProp_SetsFPSCR         0x02000000
 #define PPCOpProp_ReadsFPSCR        0x04000000

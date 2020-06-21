@@ -119,7 +119,6 @@ class ARM64ImmInstruction : public TR::Instruction
 
 public:
 
-   // Constructors without relocation types
    /*
     * @brief Constructor
     * @param[in] op : instruction opcode
@@ -140,7 +139,7 @@ public:
     * @param[in] cg : CodeGenerator
     */
    ARM64ImmInstruction(TR::InstOpCode::Mnemonic op, TR::Node *node, uint32_t imm,
-                        TR::Instruction *precedingInstruction, TR::CodeGenerator *cg)
+                       TR::Instruction *precedingInstruction, TR::CodeGenerator *cg)
       : TR::Instruction(op, node, precedingInstruction, cg), _sourceImmediate(imm)
       {
       }
@@ -181,6 +180,147 @@ public:
     * @return instruction cursor
     */
    virtual uint8_t *generateBinaryEncoding();
+   };
+
+class ARM64RelocatableImmInstruction : public TR::Instruction
+   {
+   uintptr_t _sourceImmediate;
+   TR_ExternalRelocationTargetKind _reloKind;
+   TR::SymbolReference *_symbolReference;
+
+public:
+
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] imm : immediate value
+    * @param[in] relocationKind : relocation kind
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64RelocatableImmInstruction(TR::InstOpCode::Mnemonic op, TR::Node *node, uintptr_t imm,
+                       TR_ExternalRelocationTargetKind relocationKind, TR::CodeGenerator *cg)
+      : TR::Instruction(op, node, cg),
+        _sourceImmediate(imm), _reloKind(relocationKind), _symbolReference(NULL)
+      {
+      setNeedsAOTRelocation();
+      }
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] imm : immediate value
+    * @param[in] relocationKind : relocation kind
+    * @param[in] precedingInstruction : preceding instruction
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64RelocatableImmInstruction(TR::InstOpCode::Mnemonic op, TR::Node *node, uintptr_t imm,
+                       TR_ExternalRelocationTargetKind relocationKind, TR::Instruction *precedingInstruction,
+                       TR::CodeGenerator *cg)
+      : TR::Instruction(op, node, precedingInstruction, cg),
+        _sourceImmediate(imm), _reloKind(relocationKind), _symbolReference(NULL)
+      {
+      setNeedsAOTRelocation();
+      }
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] imm : immediate value
+    * @param[in] relocationKind : relocation kind
+    * @param[in] sr : symbol reference
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64RelocatableImmInstruction(TR::InstOpCode::Mnemonic op, TR::Node *node, uintptr_t imm,
+                       TR_ExternalRelocationTargetKind relocationKind, TR::SymbolReference *sr,
+                       TR::CodeGenerator *cg)
+      : TR::Instruction(op, node, cg),
+        _sourceImmediate(imm), _reloKind(relocationKind), _symbolReference(sr)
+      {
+      setNeedsAOTRelocation();
+      }
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] imm : immediate value
+    * @param[in] relocationKind : relocation kind
+    * @param[in] sr : symbol reference
+    * @param[in] precedingInstruction : preceding instruction
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64RelocatableImmInstruction(TR::InstOpCode::Mnemonic op, TR::Node *node, uintptr_t imm,
+                       TR_ExternalRelocationTargetKind relocationKind, TR::SymbolReference *sr,
+                       TR::Instruction *precedingInstruction, TR::CodeGenerator *cg)
+      : TR::Instruction(op, node, precedingInstruction, cg),
+        _sourceImmediate(imm), _reloKind(relocationKind), _symbolReference(sr)
+      {
+      setNeedsAOTRelocation();
+      }
+
+   /**
+    * @brief Gets instruction kind
+    * @return instruction kind
+    */
+   virtual Kind getKind() { return IsRelocatableImm; }
+
+   /**
+    * @brief Gets source immediate
+    * @return source immediate
+    */
+   uintptr_t getSourceImmediate() {return _sourceImmediate;}
+   /**
+    * @brief Sets source immediate
+    * @param[in] si : immediate value
+    * @return source immediate
+    */
+   uintptr_t setSourceImmediate(intptr_t si) {return (_sourceImmediate = si);}
+
+   /**
+    * @brief Encodes the immediate value into the instruction
+    * @param[in] instruction : instruction address
+    */
+   void insertImmediateField(uintptr_t *instruction)
+      {
+      *instruction = _sourceImmediate;
+      }
+
+   /**
+    * @brief Sets relocation kind
+    * @param[in] reloKind : relocation kind
+    * @return relocation kind
+    */
+   TR_ExternalRelocationTargetKind setReloKind(TR_ExternalRelocationTargetKind reloKind) { return (_reloKind = reloKind); }
+   /**
+    * @brief Gets relocation kind
+    * @return relocation kind
+    */
+   TR_ExternalRelocationTargetKind getReloKind() { return _reloKind; }
+
+   /**
+    * @brief Sets symbol reference
+    * @param[in] sr : symbol reference
+    * @return symbol reference
+    */
+   TR::SymbolReference *setSymbolReference(TR::SymbolReference *sr) { return (_symbolReference = sr); }
+   /**
+    * @brief Gets symbol reference
+    * @return symbol reference
+    */
+   TR::SymbolReference *getSymbolReference() { return _symbolReference; }
+
+   /**
+    * @brief Generates binary encoding of the instruction
+    * @return instruction cursor
+    */
+   virtual uint8_t *generateBinaryEncoding();
+
+   /**
+    * @brief Estimates binary length
+    * @param[in] currentEstimate : current estimated length
+    * @return estimated binary length
+    */
+   virtual int32_t estimateBinaryLength(int32_t currentEstimate);
    };
 
 class ARM64ImmSymInstruction : public TR::Instruction
@@ -558,7 +698,7 @@ class ARM64CompareBranchInstruction : public ARM64LabelInstruction
     * @param[in] cg : CodeGenerator
     */
    ARM64CompareBranchInstruction(TR::InstOpCode::Mnemonic op, TR::Node *node, TR::Register *sreg, TR::LabelSymbol *sym,
-                                     TR::CodeGenerator *cg)
+                                 TR::CodeGenerator *cg)
       : ARM64LabelInstruction(op, node, sym, cg), _source1Register(sreg),
         _estimatedBinaryLocation(0)
       {
@@ -575,8 +715,44 @@ class ARM64CompareBranchInstruction : public ARM64LabelInstruction
     * @param[in] cg : CodeGenerator
     */
    ARM64CompareBranchInstruction(TR::InstOpCode::Mnemonic op, TR::Node *node, TR::Register *sreg, TR::LabelSymbol *sym,
-                                     TR::Instruction *precedingInstruction, TR::CodeGenerator *cg)
+                                 TR::Instruction *precedingInstruction, TR::CodeGenerator *cg)
       : ARM64LabelInstruction(op, node, sym, precedingInstruction, cg), _source1Register(sreg),
+        _estimatedBinaryLocation(0)
+      {
+      useRegister(sreg);
+      }
+
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] sreg : source register
+    * @param[in] sym : label symbol
+    * @param[in] cond : register dependency condition
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64CompareBranchInstruction(TR::InstOpCode::Mnemonic op, TR::Node *node, TR::Register *sreg, TR::LabelSymbol *sym,
+                                 TR::RegisterDependencyConditions *cond, TR::CodeGenerator *cg)
+      : ARM64LabelInstruction(op, node, sym, cond, cg), _source1Register(sreg),
+        _estimatedBinaryLocation(0)
+      {
+      useRegister(sreg);
+      }
+
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] sreg : source register
+    * @param[in] sym : label symbol
+    * @param[in] cond : register dependency condition
+    * @param[in] precedingInstruction : preceding instruction
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64CompareBranchInstruction(TR::InstOpCode::Mnemonic op, TR::Node *node, TR::Register *sreg, TR::LabelSymbol *sym,
+                                 TR::RegisterDependencyConditions *cond, TR::Instruction *precedingInstruction,
+                                 TR::CodeGenerator *cg)
+      : ARM64LabelInstruction(op, node, sym, cond, precedingInstruction, cg), _source1Register(sreg),
         _estimatedBinaryLocation(0)
       {
       useRegister(sreg);
@@ -1404,6 +1580,76 @@ class ARM64Trg1Src1Instruction : public ARM64Trg1Instruction
    virtual uint8_t *generateBinaryEncoding();
    };
 
+/*
+ * This class is designated to be used for alias instruction such as movw, movx, negw, negx
+ */
+class ARM64Trg1ZeroSrc1Instruction : public ARM64Trg1Src1Instruction
+   {
+   public:
+
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] treg : target register
+    * @param[in] sreg : source register
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64Trg1ZeroSrc1Instruction(TR::InstOpCode::Mnemonic op, TR::Node *node, TR::Register *treg,
+                             TR::Register *sreg, TR::CodeGenerator *cg)
+      : ARM64Trg1Src1Instruction(op, node, treg, sreg, cg)
+      {
+      }
+
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] treg : target register
+    * @param[in] sreg : source register
+    * @param[in] precedingInstruction : preceding instruction
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64Trg1ZeroSrc1Instruction(TR::InstOpCode::Mnemonic op, TR::Node *node, TR::Register *treg,
+                             TR::Register *sreg,
+                             TR::Instruction *precedingInstruction, TR::CodeGenerator *cg)
+      : ARM64Trg1Src1Instruction(op, node, treg, sreg, precedingInstruction, cg)
+      {
+      }
+
+   /**
+    * @brief Gets instruction kind
+    * @return instruction kind
+    */
+   virtual Kind getKind() { return IsTrg1ZeroSrc1; }
+
+   /**
+    * @brief Sets source register in binary encoding
+    * @param[in] instruction : instruction cursor
+    */
+   void insertSource1Register(uint32_t *instruction)
+      {
+      TR::RealRegister *source1 = toRealRegister(getSource1Register());
+      source1->setRegisterFieldRM(instruction);
+      }
+
+   /**
+    * @brief Sets zero register in binary encoding
+    * @param[in] instruction : instruction cursor
+    */
+   void insertZeroRegister(uint32_t *instruction)
+      {
+      TR::RealRegister *zeroReg = cg()->machine()->getRealRegister(TR::RealRegister::xzr);
+      zeroReg->setRegisterFieldRN(instruction);
+      }
+
+   /**
+    * @brief Generates binary encoding of the instruction
+    * @return instruction cursor
+    */
+   virtual uint8_t *generateBinaryEncoding();
+   };
+
 class ARM64Trg1Src1ImmInstruction : public ARM64Trg1Src1Instruction
    {
    uint32_t _source1Immediate;
@@ -1736,6 +1982,7 @@ class ARM64Trg1Src2Instruction : public ARM64Trg1Src1Instruction
    virtual uint8_t *generateBinaryEncoding();
    };
 
+
 class ARM64CondTrg1Src2Instruction : public ARM64Trg1Src2Instruction
    {
    TR::ARM64ConditionCode _cc;
@@ -2063,6 +2310,75 @@ class ARM64Trg1Src2ExtendedInstruction : public ARM64Trg1Src2Instruction
    void insertExtend(uint32_t *instruction)
       {
       *instruction |= ((_extendType & 0x7) << 13) | ((_shiftAmount & 0x7) << 10);
+      }
+
+   /**
+    * @brief Generates binary encoding of the instruction
+    * @return instruction cursor
+    */
+   virtual uint8_t *generateBinaryEncoding();
+   };
+
+/*
+ * This class is designated to be used for alias instruction such as mulw, mulx
+ */
+class ARM64Trg1Src2ZeroInstruction : public ARM64Trg1Src2Instruction
+   {
+   public:
+
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] treg : target register
+    * @param[in] s1reg : source register 1
+    * @param[in] s2reg : source register 2
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64Trg1Src2ZeroInstruction( TR::InstOpCode::Mnemonic op,
+                                 TR::Node *node,
+                                 TR::Register *treg,
+                                 TR::Register *s1reg,
+                                 TR::Register *s2reg,
+                                 TR::CodeGenerator *cg)
+      : ARM64Trg1Src2Instruction(op, node, treg, s1reg, s2reg, cg)
+      {
+      }
+
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] treg : target register
+    * @param[in] s1reg : source register 1
+    * @param[in] s2reg : source register 2
+    * @param[in] precedingInstruction : preceding instruction
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64Trg1Src2ZeroInstruction( TR::InstOpCode::Mnemonic op,
+                                 TR::Node *node,
+                                 TR::Register *treg,
+                                 TR::Register *s1reg,
+                                 TR::Register *s2reg,
+                                 TR::Instruction *precedingInstruction, TR::CodeGenerator *cg)
+      : ARM64Trg1Src2Instruction(op, node, treg, s1reg, s2reg, precedingInstruction, cg)
+      {
+      }
+
+   /**
+    * @brief Gets instruction kind
+    * @return instruction kind
+    */
+   virtual Kind getKind() { return IsTrg1Src2Zero; }
+
+   /**
+    * @brief Sets zero register in binary encoding
+    * @param[in] instruction : instruction cursor
+    */
+   void insertZeroRegister(uint32_t *instruction)
+      {
+      TR::RealRegister *zeroReg = cg()->machine()->getRealRegister(TR::RealRegister::xzr);
+      zeroReg->setRegisterFieldRA(instruction);
       }
 
    /**
@@ -2936,6 +3252,146 @@ class ARM64Src1Instruction : public TR::Instruction
    virtual uint8_t *generateBinaryEncoding();
    };
 
+/*
+ * This class is designated to be used for alias instruction such as cmpimmw, cmpimmx, tstimmw, tstimmx
+ */
+class ARM64ZeroSrc1ImmInstruction : public ARM64Src1Instruction
+   {
+   uint32_t _source1Immediate;
+   bool _Nbit;
+
+   public:
+
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] sreg : source register
+    * @param[in] imm : immediate value
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64ZeroSrc1ImmInstruction(TR::InstOpCode::Mnemonic op, TR::Node *node,
+                                TR::Register *sreg, uint32_t imm, TR::CodeGenerator *cg)
+      : ARM64Src1Instruction(op, node, sreg, cg), _source1Immediate(imm), _Nbit(false)
+      {
+      }
+
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] sreg : source register
+    * @param[in] N   : N bit value
+    * @param[in] imm : immediate value
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64ZeroSrc1ImmInstruction(TR::InstOpCode::Mnemonic op, TR::Node *node,
+                                TR::Register *sreg, bool N, uint32_t imm, TR::CodeGenerator *cg)
+      : ARM64Src1Instruction(op, node, sreg, cg), _source1Immediate(imm), _Nbit(N)
+      {
+      }
+
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] sreg : source register
+    * @param[in] imm : immediate value
+    * @param[in] precedingInstruction : preceding instruction
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64ZeroSrc1ImmInstruction(TR::InstOpCode::Mnemonic op, TR::Node *node,
+                                TR::Register *sreg, uint32_t imm,
+                                TR::Instruction *precedingInstruction, TR::CodeGenerator *cg)
+      : ARM64Src1Instruction(op, node, sreg, precedingInstruction, cg), _source1Immediate(imm), _Nbit(false)
+      {
+      }
+
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] sreg : source register
+    * @param[in] N   : N bit value
+    * @param[in] imm : immediate value
+    * @param[in] precedingInstruction : preceding instruction
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64ZeroSrc1ImmInstruction(TR::InstOpCode::Mnemonic op, TR::Node *node,
+                                TR::Register *sreg, bool N, uint32_t imm,
+                                TR::Instruction *precedingInstruction, TR::CodeGenerator *cg)
+      : ARM64Src1Instruction(op, node, sreg, precedingInstruction, cg), _source1Immediate(imm), _Nbit(N)
+      {
+      }
+
+   /**
+    * @brief Gets instruction kind
+    * @return instruction kind
+    */
+   virtual Kind getKind() { return IsZeroSrc1Imm; }
+
+   /**
+    * @brief Gets source immediate
+    * @return source immediate
+    */
+   uint32_t getSourceImmediate() {return _source1Immediate;}
+   /**
+    * @brief Sets source immediate
+    * @param[in] si : immediate value
+    * @return source immediate
+    */
+   uint32_t setSourceImmediate(uint32_t si) {return (_source1Immediate = si);}
+
+   /**
+    * @brief Gets the N bit (bit 22)
+    * @return N bit value
+    */
+   bool getNbit() { return _Nbit;}
+   /**
+    * @brief Sets the N bit (bit 22)
+    * @param[in] n : N bit value
+    * @return N bit value
+    */
+   bool setNbit(bool n) { return (_Nbit = n);}
+
+   /**
+    * @brief Sets zero register in binary encoding
+    * @param[in] instruction : instruction cursor
+    */
+   void insertZeroRegister(uint32_t *instruction)
+      {
+      TR::RealRegister *zeroReg = cg()->machine()->getRealRegister(TR::RealRegister::xzr);
+      zeroReg->setRegisterFieldRD(instruction);
+      }
+
+   /**
+    * @brief Sets immediate field in binary encoding
+    * @param[in] instruction : instruction cursor
+    */
+   void insertImmediateField(uint32_t *instruction)
+      {
+      *instruction |= ((_source1Immediate & 0xfff) << 10); /* imm12 */
+      }
+
+   /**
+    * @brief Sets N bit (bit 22) field in binary encoding
+    * @param[in] instruction : instruction cursor
+    */
+   void insertNbit(uint32_t *instruction)
+      {
+      if (_Nbit)
+         {
+         *instruction |= (1 << 22);
+         }
+      }
+
+   /**
+    * @brief Generates binary encoding of the instruction
+    * @return instruction cursor
+    */
+   virtual uint8_t *generateBinaryEncoding();
+   };
+
 class ARM64Src2Instruction : public ARM64Src1Instruction
    {
    TR::Register *_source2Register;
@@ -3044,6 +3500,70 @@ class ARM64Src2Instruction : public ARM64Src1Instruction
     * @param[in] kindToBeAssigned : register kind
     */
    virtual void assignRegisters(TR_RegisterKinds kindToBeAssigned);
+
+   /**
+    * @brief Generates binary encoding of the instruction
+    * @return instruction cursor
+    */
+   virtual uint8_t *generateBinaryEncoding();
+   };
+
+/*
+ * This class is designated to be used for alias instruction such as cmpw, cmpx, tstw, tstx
+ */
+class ARM64ZeroSrc2Instruction : public ARM64Src2Instruction
+   {
+   public:
+
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] s1reg : source register 1
+    * @param[in] s2reg : source register 2
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64ZeroSrc2Instruction( TR::InstOpCode::Mnemonic op,
+                         TR::Node *node,
+                         TR::Register *s1reg,
+                         TR::Register *s2reg, TR::CodeGenerator *cg)
+      : ARM64Src2Instruction(op, node, s1reg, s2reg, cg)
+      {
+      }
+
+   /*
+    * @brief Constructor
+    * @param[in] op : instruction opcode
+    * @param[in] node : node
+    * @param[in] s1reg : source register 1
+    * @param[in] s2reg : source register 2
+    * @param[in] precedingInstruction : preceding instruction
+    * @param[in] cg : CodeGenerator
+    */
+   ARM64ZeroSrc2Instruction( TR::InstOpCode::Mnemonic op,
+                         TR::Node *node,
+                         TR::Register *s1reg,
+                         TR::Register *s2reg,
+                         TR::Instruction *precedingInstruction, TR::CodeGenerator *cg)
+      : ARM64Src2Instruction(op, node, s1reg, s2reg, precedingInstruction, cg)
+      {
+      }
+
+   /**
+    * @brief Gets instruction kind
+    * @return instruction kind
+    */
+   virtual Kind getKind() { return IsZeroSrc2; }
+
+   /**
+    * @brief Sets zero register in binary encoding
+    * @param[in] instruction : instruction cursor
+    */
+   void insertZeroRegister(uint32_t *instruction)
+      {
+      TR::RealRegister *zeroReg = cg()->machine()->getRealRegister(TR::RealRegister::xzr);
+      zeroReg->setRegisterFieldRD(instruction);
+      }
 
    /**
     * @brief Generates binary encoding of the instruction

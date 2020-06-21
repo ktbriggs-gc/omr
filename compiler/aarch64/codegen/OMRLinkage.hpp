@@ -101,7 +101,6 @@ struct ARM64LinkageProperties
    TR::RealRegister::RegNum _vtableIndexArgumentRegister; // for icallVMprJavaSendPatchupVirtual
    TR::RealRegister::RegNum _j9methodArgumentRegister; // for icallVMprJavaSendStatic
    uint8_t _numberOfDependencyGPRegisters;
-   int8_t _offsetToFirstParm;
    int8_t _offsetToFirstLocal;
 
    uint32_t getNumIntArgRegs() const {return _numIntegerArgumentRegisters;}
@@ -264,8 +263,6 @@ struct ARM64LinkageProperties
       return _j9methodArgumentRegister;
       }
 
-   int32_t getOffsetToFirstParm() const {return _offsetToFirstParm;}
-
    int32_t getOffsetToFirstLocal() const {return _offsetToFirstLocal;}
 
    uint32_t getNumberOfDependencyGPRegisters() const {return _numberOfDependencyGPRegisters;}
@@ -314,20 +311,16 @@ class OMR_EXTENSIBLE Linkage : public OMR::Linkage
    virtual TR::MemoryReference *getOutgoingArgumentMemRef(TR::Register *argMemReg, TR::Register *argReg, TR::InstOpCode::Mnemonic opCode, TR::ARM64MemoryArgument &memArg);
 
    /**
-    * @brief Saves arguments
+    * @brief Loads parameters from stack
     * @param[in] cursor : instruction cursor
     */
-   virtual TR::Instruction *saveArguments(TR::Instruction *cursor); // may need more parameters
+   virtual TR::Instruction *loadStackParametersToLinkageRegisters(TR::Instruction *cursor);
    /**
-    * @brief Loads up arguments
+    * @brief Saves parameters to stack
     * @param[in] cursor : instruction cursor
     */
-   virtual TR::Instruction *loadUpArguments(TR::Instruction *cursor);
-   /**
-    * @brief Flushes arguments
-    * @param[in] cursor : instruction cursor
-    */
-   virtual TR::Instruction *flushArguments(TR::Instruction *cursor);
+   virtual TR::Instruction *saveParametersToStack(TR::Instruction *cursor);
+
    /**
     * @brief Sets parameter linkage register index
     * @param[in] method : method symbol

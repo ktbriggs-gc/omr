@@ -518,13 +518,20 @@ uint32_t TR_OSRCompilationData::getOSRStackFrameSize(uint32_t methodIndex)
       return 0;
    }
 
-static void printMap(DefiningMap *map, TR::Compilation *comp)
+void TR_OSRCompilationData::printMap(DefiningMap *map)
    {
-   for (auto it = map->begin(); it != map->end(); ++it)
+   if (map)
       {
-      traceMsg(comp, "# %d:", it->first);
-      it->second->print(comp);
-      traceMsg(comp, "\n");
+      for (auto it = map->begin(); it != map->end(); ++it)
+         {
+         traceMsg(comp, "# %d:", it->first);
+         it->second->print(comp);
+         traceMsg(comp, "\n");
+         }
+      }
+   else
+      {
+      traceMsg(comp, "Empty map\n");
       }
    }
 
@@ -544,9 +551,12 @@ static void printMap(DefiningMap *map, TR::Compilation *comp)
  *
  * Combining the FinalMap with liveness info from OSRLiveRangeAnalysis, we are able to find which
  * symbols should be kept alive at each osrPoints.
+ *
+ * \param region A \ref TR::Region memory region in which the final DefiningMaps
+ *               will be allocated.  The caller is responsible for releasing
+ *               the memory in which the DefiningMaps are allocated
  */
-
-void TR_OSRCompilationData::buildDefiningMap()
+void TR_OSRCompilationData::buildDefiningMap(TR::Region &region)
    {
    const TR_Array<TR_OSRMethodData *>& methodDataArray = getOSRMethodDataArray();
    int numOfMethods = methodDataArray.size();
@@ -571,7 +581,7 @@ void TR_OSRCompilationData::buildDefiningMap()
       TR::Block *osrCatchBlock = osrMethodData->getOSRCatchBlock();
       if (osrCatchBlock && osrCatchBlock->getExceptionPredecessors().size() > 0)
          {
-         definingMapAtOSRCatchBlocks[i] = new DefiningMap(DefiningMapComparator(), DefiningMapAllocator(comp->trMemory()->currentStackRegion()));
+         definingMapAtOSRCatchBlocks[i] = new (comp->trMemory()->currentStackRegion()) DefiningMap(DefiningMapComparator(), DefiningMapAllocator(comp->trMemory()->currentStackRegion()));
          osrMethodData->buildDefiningMapForBlock(osrCatchBlock, definingMapAtOSRCatchBlocks[i]);
          }
       else osrCatchBlockRemoved = true;
@@ -579,14 +589,18 @@ void TR_OSRCompilationData::buildDefiningMap()
       TR::Block *osrCodeBlock = osrMethodData->getOSRCodeBlock();
       if (osrCodeBlock && osrCodeBlock->getPredecessors().size() > 0)
          {
-         definingMapAtOSRCodeBlocks[i] = new DefiningMap(DefiningMapComparator(), DefiningMapAllocator(comp->trMemory()->currentStackRegion()));
-         definingMapAtPrepareForOSRCalls[i] = new DefiningMap(DefiningMapComparator(), DefiningMapAllocator(comp->trMemory()->currentStackRegion()));
+         definingMapAtOSRCodeBlocks[i] = new (comp->trMemory()->currentStackRegion()) DefiningMap(DefiningMapComparator(), DefiningMapAllocator(comp->trMemory()->currentStackRegion()));
+         definingMapAtPrepareForOSRCalls[i] = new (comp->trMemory()->currentStackRegion()) DefiningMap(DefiningMapComparator(), DefiningMapAllocator(comp->trMemory()->currentStackRegion()));
          osrMethodData->buildDefiningMapForOSRCodeBlockAndPrepareForOSRCall(osrCodeBlock, definingMapAtOSRCodeBlocks[i], definingMapAtPrepareForOSRCalls[i]);
          }
       else osrCodeBlockRemoved = true;
 
       if (!osrCatchBlockRemoved && !osrCodeBlockRemoved )
-         buildFinalMap(i-1, osrMethodData->getDefiningMap(), definingMapAtOSRCatchBlocks[i], definingMapAtOSRCodeBlocks, definingMapAtPrepareForOSRCalls);
+         {
+         DefiningMap *finalMap = new (region) DefiningMap(DefiningMapComparator(), DefiningMapAllocator(region));
+         buildFinalMap(i-1, finalMap, definingMapAtOSRCatchBlocks[i], definingMapAtOSRCodeBlocks, definingMapAtPrepareForOSRCalls);
+         osrMethodData->setDefiningMap(finalMap);
+         }
       }
 
    if (comp->getOption(TR_TraceOSR))
@@ -600,8 +614,21 @@ void TR_OSRCompilationData::buildDefiningMap()
          if (osrMethodData->getOSRCatchBlock())
             {
             traceMsg(comp, "final map for OSRCatchBlock(block_%d): \n", osrMethodData->getOSRCatchBlock()->getNumber());
-            printMap(definingMap, comp);
+            printMap(definingMap);
             }
+         }
+      }
+   }
+
+void TR_OSRCompilationData::clearDefiningMap()
+   {
+   const TR_Array<TR_OSRMethodData *>& methodDataArray = getOSRMethodDataArray();
+   for (intptr_t i = 0; i < methodDataArray.size(); ++i)
+      {
+      TR_OSRMethodData *osrMethodData = methodDataArray[i];
+      if (osrMethodData)
+         {
+         osrMethodData->setDefiningMap(NULL);
          }
       }
    }
@@ -661,9 +688,9 @@ static void mergeDefiningMaps(DefiningMap *firstMap, DefiningMap *secondMap, TR:
    if (comp->getOption(TR_TraceOSR))
       {
       traceMsg(comp, "mergeDefiningMaps: firstMap before\n");
-      printMap(firstMap, comp);
+      comp->getOSRCompilationData()->printMap(firstMap);
       traceMsg(comp, "mergeDefiningMaps: secondMap before\n");
-      printMap(secondMap, comp);
+      comp->getOSRCompilationData()->printMap(secondMap);
       }
 
    for (auto it = secondMap->begin(); it != secondMap->end(); ++it)
@@ -684,7 +711,7 @@ static void mergeDefiningMaps(DefiningMap *firstMap, DefiningMap *secondMap, TR:
    if (comp->getOption(TR_TraceOSR))
       {
       traceMsg(comp, "mergeDefiningMaps: firstMap after\n");
-      printMap(firstMap, comp);
+      comp->getOSRCompilationData()->printMap(firstMap);
       }
    }
 
@@ -843,7 +870,8 @@ TR_OSRMethodData::buildDefiningMap(TR::Block *block, DefiningMap *blockMap, Defi
                }
             }
          }
-      else if (node->getFirstChild() &&
+      else if (node->getNumChildren() > 0 &&
+               node->getFirstChild() &&
                node->getFirstChild()->getOpCode().isCall() &&
                node->getFirstChild()->getSymbolReference()->getReferenceNumber() == TR_prepareForOSR)
          {
@@ -892,7 +920,7 @@ TR_OSRMethodData::collectSubTreeSymRefs(TR::Node *node, TR_BitVector *subTreeSym
       {
       subTreeSymRefs->set(node->getSymbolReference()->getReferenceNumber());
       }
-   else if (node->getRegLoadStoreSymbolReference())
+   else if (node->getOpCode().isStoreReg() || node->getOpCode().isLoadReg())
       {
       subTreeSymRefs->set(node->getRegLoadStoreSymbolReference()->getReferenceNumber());
       }
@@ -1379,9 +1407,13 @@ TR_OSRMethodData::setNumOfSymsThatShareSlot(int32_t newValue)
 DefiningMap *
 TR_OSRMethodData::getDefiningMap()
    {
-   if (_symRefDefiningMap == NULL)
-      _symRefDefiningMap = new DefiningMap(DefiningMapComparator(), DefiningMapAllocator(comp()->trMemory()->heapMemoryRegion()));
    return _symRefDefiningMap;
+   }
+
+void
+TR_OSRMethodData::setDefiningMap(DefiningMap* definingMap)
+   {
+   _symRefDefiningMap = definingMap;
    }
 
 TR::Compilation& operator<< (TR::Compilation& out, const TR_OSRMethodData& osrMethodData)

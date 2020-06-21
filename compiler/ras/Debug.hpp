@@ -185,6 +185,7 @@ namespace TR { class PPCTrg1ImmInstruction;              }
 namespace TR { class PPCTrg1Src1ImmInstruction;          }
 namespace TR { class PPCTrg1Src1Imm2Instruction;         }
 namespace TR { class PPCSrc2Instruction;                 }
+namespace TR { class PPCSrc3Instruction;                 }
 namespace TR { class PPCTrg1Src2Instruction;             }
 namespace TR { class PPCTrg1Src2ImmInstruction;          }
 namespace TR { class PPCTrg1Src3Instruction;             }
@@ -333,6 +334,7 @@ namespace TR { class J9S390InterfaceCallDataSnippet; }
 #endif
 
 namespace TR { class ARM64ImmInstruction; }
+namespace TR { class ARM64RelocatableImmInstruction; }
 namespace TR { class ARM64ImmSymInstruction; }
 namespace TR { class ARM64LabelInstruction; }
 namespace TR { class ARM64ConditionalBranchInstruction; }
@@ -344,11 +346,13 @@ namespace TR { class ARM64Trg1CondInstruction; }
 namespace TR { class ARM64Trg1ImmInstruction; }
 namespace TR { class ARM64Trg1ImmSymInstruction; }
 namespace TR { class ARM64Trg1Src1Instruction; }
+namespace TR { class ARM64Trg1ZeroSrc1Instruction; }
 namespace TR { class ARM64Trg1Src1ImmInstruction; }
 namespace TR { class ARM64Trg1Src2Instruction; }
 namespace TR { class ARM64CondTrg1Src2Instruction; }
 namespace TR { class ARM64Trg1Src2ShiftedInstruction; }
 namespace TR { class ARM64Trg1Src2ExtendedInstruction; }
+namespace TR { class ARM64Trg1Src2ZeroInstruction; }
 namespace TR { class ARM64Trg1Src3Instruction; }
 namespace TR { class ARM64Trg1MemInstruction; }
 namespace TR { class ARM64MemInstruction; }
@@ -356,7 +360,9 @@ namespace TR { class ARM64MemSrc1Instruction; }
 namespace TR { class ARM64MemSrc2Instruction; }
 namespace TR { class ARM64Trg1MemSrc1Instruction; }
 namespace TR { class ARM64Src1Instruction; }
+namespace TR { class ARM64ZeroSrc1ImmInstruction; }
 namespace TR { class ARM64Src2Instruction; }
+namespace TR { class ARM64ZeroSrc2Instruction; }
 namespace TR { class ARM64HelperCallSnippet; }
 
 namespace TR { class LabelInstruction; }
@@ -895,6 +901,7 @@ public:
    void print(TR::FILE *, TR::PPCTrg1Src1ImmInstruction *);
    void print(TR::FILE *, TR::PPCTrg1Src1Imm2Instruction *);
    void print(TR::FILE *, TR::PPCSrc2Instruction *);
+   void print(TR::FILE *, TR::PPCSrc3Instruction *);
    void print(TR::FILE *, TR::PPCTrg1Src2Instruction *);
    void print(TR::FILE *, TR::PPCTrg1Src2ImmInstruction *);
    void print(TR::FILE *, TR::PPCTrg1Src3Instruction *);
@@ -1103,6 +1110,7 @@ public:
    void printPrefix(TR::FILE *, TR::Instruction *);
 
    void print(TR::FILE *, TR::ARM64ImmInstruction *);
+   void print(TR::FILE *, TR::ARM64RelocatableImmInstruction *);
    void print(TR::FILE *, TR::ARM64ImmSymInstruction *);
    void print(TR::FILE *, TR::ARM64LabelInstruction *);
    void print(TR::FILE *, TR::ARM64ConditionalBranchInstruction *);
@@ -1114,11 +1122,13 @@ public:
    void print(TR::FILE *, TR::ARM64Trg1ImmInstruction *);
    void print(TR::FILE *, TR::ARM64Trg1ImmSymInstruction *);
    void print(TR::FILE *, TR::ARM64Trg1Src1Instruction *);
+   void print(TR::FILE *, TR::ARM64Trg1ZeroSrc1Instruction *);
    void print(TR::FILE *, TR::ARM64Trg1Src1ImmInstruction *);
    void print(TR::FILE *, TR::ARM64Trg1Src2Instruction *);
    void print(TR::FILE *, TR::ARM64CondTrg1Src2Instruction *);
    void print(TR::FILE *, TR::ARM64Trg1Src2ShiftedInstruction *);
    void print(TR::FILE *, TR::ARM64Trg1Src2ExtendedInstruction *);
+   void print(TR::FILE *, TR::ARM64Trg1Src2ZeroInstruction *);
    void print(TR::FILE *, TR::ARM64Trg1Src3Instruction *);
    void print(TR::FILE *, TR::ARM64Trg1MemInstruction *);
    void print(TR::FILE *, TR::ARM64MemInstruction *);
@@ -1126,7 +1136,9 @@ public:
    void print(TR::FILE *, TR::ARM64MemSrc2Instruction *);
    void print(TR::FILE *, TR::ARM64Trg1MemSrc1Instruction *);
    void print(TR::FILE *, TR::ARM64Src1Instruction *);
+   void print(TR::FILE *, TR::ARM64ZeroSrc1ImmInstruction *);
    void print(TR::FILE *, TR::ARM64Src2Instruction *);
+   void print(TR::FILE *, TR::ARM64ZeroSrc2Instruction *);
 #ifdef J9_PROJECT_SPECIFIC
    void print(TR::FILE *, TR::ARM64VirtualGuardNOPInstruction *);
 #endif

@@ -339,7 +339,7 @@ TR::PPCSystemLinkage::PPCSystemLinkage(TR::CodeGenerator *cg)
 
       // Volatile GPR (0,2-12) + FPR (0-13) + CCR (0-1,5-7) + VR (0-19) + FPR (14-31) if used as vector
       _properties._numberOfDependencyGPRegisters = 12 + 14 + 5 + 20 + 18;
-      _properties._offsetToFirstParm             = isBE?48:32;
+      setOffsetToFirstParm(isBE ? 48 : 32);
       _properties._offsetToFirstLocal            = isBE?48:32;
       }
    else
@@ -348,14 +348,14 @@ TR::PPCSystemLinkage::PPCSystemLinkage(TR::CodeGenerator *cg)
          {
          // Volatile GPR (0,2-12) + FPR (0-13) + CCR (0-1,5-7) + VR (0-19) + FPR (14-31) if used as vector
          _properties._numberOfDependencyGPRegisters = 12 + 14 + 5 + 20 + 18;
-         _properties._offsetToFirstParm             = 24;
+         setOffsetToFirstParm(24);
          _properties._offsetToFirstLocal            = 24;
          }
       else
          {
          // Volatile GPR (0,3-12) + FPR (0-13) + CCR (0-1,5-7) + VR (0-19) + FPR (14-31) if used as vector
          _properties._numberOfDependencyGPRegisters = 11 + 14 + 5 + 20 + 18;
-         _properties._offsetToFirstParm             = 8;
+         setOffsetToFirstParm(8);
          _properties._offsetToFirstLocal            = 8;
          }
       }
@@ -466,7 +466,7 @@ TR::PPCSystemLinkage::mapParameters(
    ListIterator<TR::ParameterSymbol> parameterIterator(&parmList);
    TR::ParameterSymbol              *parmCursor = parameterIterator.getFirst();
    const TR::PPCLinkageProperties&    linkage           = getProperties();
-   int32_t                          offsetToFirstParm = linkage.getOffsetToFirstParm();
+   int32_t                          offsetToFirstParm = self()->getOffsetToFirstParm();
    int32_t offset_from_top = 0;
    int32_t slot_size = sizeof(uintptr_t);
 
@@ -567,7 +567,7 @@ TR::PPCSystemLinkage::mapStack(TR::ResolvedMethodSymbol *method)
 
    method->setLocalMappingCursor(stackIndex);
 
-   int32_t offsetToFirstParm = linkage.getOffsetToFirstParm();
+   int32_t offsetToFirstParm = self()->getOffsetToFirstParm();
    mapParameters(method, method->getParameterList());
 
 #ifdef __LITTLE_ENDIAN__
@@ -680,7 +680,7 @@ TR::PPCSystemLinkage::createPrologue(
 
    if (savedFirst <= TR::RealRegister::LastGPR)
       {
-      if (cg()->comp()->target().cpu.id() == TR_PPCgp || cg()->comp()->target().is64Bit() ||
+      if (cg()->comp()->target().cpu.is(OMR_PROCESSOR_PPC_GP) || cg()->comp()->target().is64Bit() ||
           (!comp()->getOption(TR_OptimizeForSpace) &&
            TR::RealRegister::LastGPR - savedFirst <= 3))
          for (regIndex=TR::RealRegister::LastGPR; regIndex>=savedFirst; regIndex=(TR::RealRegister::RegNum)((uint32_t)regIndex-1))
@@ -709,7 +709,7 @@ TR::PPCSystemLinkage::createPrologue(
    // stack frame if there are any saved non-volatiles
    //
 
-   if ( size > properties.getOffsetToFirstParm()  - argSize)
+   if (size > self()->getOffsetToFirstParm() - argSize)
       {
       if (size > (-LOWER_IMMED))
          {
@@ -783,7 +783,7 @@ TR::PPCSystemLinkage::createEpilogue(TR::Instruction *cursor)
 
    if (savedFirst <= TR::RealRegister::LastGPR)
       {
-      if (cg()->comp()->target().cpu.id() == TR_PPCgp || cg()->comp()->target().is64Bit() ||
+      if (cg()->comp()->target().cpu.is(OMR_PROCESSOR_PPC_GP) || cg()->comp()->target().is64Bit() ||
           (!comp()->getOption(TR_OptimizeForSpace) &&
            TR::RealRegister::LastGPR - savedFirst <= 3))
          for (regIndex=TR::RealRegister::LastGPR; regIndex>=savedFirst; regIndex=(TR::RealRegister::RegNum)((uint32_t)regIndex-1))
@@ -804,7 +804,7 @@ TR::PPCSystemLinkage::createEpilogue(TR::Instruction *cursor)
    // Some opcodes write into temps above stack, therefore need to allocate
    // stack frame if there are any saved non-volatiles
    //
-   if (size > properties.getOffsetToFirstParm() - saveSize)
+   if (size > self()->getOffsetToFirstParm() - saveSize)
       {
       if (size > UPPER_IMMED)
          {

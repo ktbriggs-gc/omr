@@ -457,7 +457,7 @@ TR::PPCTrg1Src1Instruction::PPCTrg1Src1Instruction(
       _source1Register(sreg)
    {
    useRegister(sreg);
-   if (op == TR::InstOpCode::addi || op == TR::InstOpCode::addis || op == TR::InstOpCode::addi2)
+   if (op == TR::InstOpCode::addi || op == TR::InstOpCode::addis || op == TR::InstOpCode::addi2 || op == TR::InstOpCode::lxvl)
       {
       cg->addRealRegisterInterference(sreg, TR::RealRegister::gr0);
       }
@@ -474,7 +474,7 @@ TR::PPCTrg1Src1Instruction::PPCTrg1Src1Instruction(
       _source1Register(sreg)
    {
    useRegister(sreg);
-   if (op == TR::InstOpCode::addi || op == TR::InstOpCode::addis || op == TR::InstOpCode::addi2)
+   if (op == TR::InstOpCode::addi || op == TR::InstOpCode::addis || op == TR::InstOpCode::addi2 || op == TR::InstOpCode::lxvl)
       {
       cg->addRealRegisterInterference(sreg, TR::RealRegister::gr0);
       }
@@ -517,7 +517,7 @@ void TR::PPCTrg1Src1Instruction::assignRegisters(TR_RegisterKinds kindToBeAssign
    TR_RegisterKinds  kindOfRegister = sourceVirtual->getKind();
    bool              excludeGPR0 = false;
 
-   if (getOpCodeValue()==TR::InstOpCode::addi || getOpCodeValue()==TR::InstOpCode::addis || getOpCodeValue()==TR::InstOpCode::addi2)
+   if (getOpCodeValue()==TR::InstOpCode::addi || getOpCodeValue()==TR::InstOpCode::addis || getOpCodeValue()==TR::InstOpCode::addi2 || getOpCodeValue()==TR::InstOpCode::lxvl)
       excludeGPR0 = true;
 
    sourceVirtual->block();
@@ -562,6 +562,35 @@ void TR::PPCTrg1Src1Instruction::assignRegisters(TR_RegisterKinds kindToBeAssign
 
 // TR::PPCSrc2Instruction:: member functions
 
+TR::PPCSrc2Instruction::PPCSrc2Instruction(
+      TR::InstOpCode::Mnemonic op,
+      TR::Node *n,
+      TR::Register *s1reg,
+      TR::Register *s2reg,
+      TR::CodeGenerator *cg)
+   : TR::Instruction(op, n, cg), _source1Register(s1reg), _source2Register(s2reg)
+   {
+   useRegister(s1reg);
+   useRegister(s2reg);
+   if (op == TR::InstOpCode::stxvl)
+      cg->addRealRegisterInterference(s2reg, TR::RealRegister::gr0);
+   }
+
+TR::PPCSrc2Instruction::PPCSrc2Instruction(
+      TR::InstOpCode::Mnemonic op,
+      TR::Node *n,
+      TR::Register *s1reg,
+      TR::Register *s2reg,
+      TR::Instruction *precedingInstruction,
+      TR::CodeGenerator *cg)
+   : TR::Instruction(op, n, precedingInstruction, cg), _source1Register(s1reg), _source2Register(s2reg)
+   {
+   useRegister(s1reg);
+   useRegister(s2reg);
+   if (op == TR::InstOpCode::stxvl)
+      cg->addRealRegisterInterference(s2reg, TR::RealRegister::gr0);
+   }
+
 bool TR::PPCSrc2Instruction::refsRegister(TR::Register *reg)
    {
    if (reg == getSource1Register() || reg == getSource2Register())
@@ -593,33 +622,76 @@ bool TR::PPCSrc2Instruction::usesRegister(TR::Register *reg)
 
 void TR::PPCSrc2Instruction::assignRegisters(TR_RegisterKinds kindToBeAssigned)
    {
-   TR::Register           *virtualRegister1 = getSource2Register();
-   TR::Register           *virtualRegister2 = getSource1Register();
+   TR::Register           *virtualRegister1 = getSource1Register();
+   TR::Register           *virtualRegister2 = getSource2Register();
    TR::RealRegister       *assignedRegister;
    TR::Machine *machine = cg()->machine();
+   bool excludeGPR0 = getOpCodeValue() == TR::InstOpCode::stxvl;
 
+   virtualRegister1->block();
+
+   assignedRegister = virtualRegister2->getAssignedRealRegister();
+   if (excludeGPR0 && (assignedRegister != NULL) &&
+       (toRealRegister(assignedRegister) == machine->getRealRegister(TR::RealRegister::gr0)))
+      {
+      TR::RealRegister    *alternativeRegister;
+
+      if ((alternativeRegister = machine->findBestFreeRegister(this, virtualRegister2->getKind(), excludeGPR0, false, virtualRegister2)) == NULL)
+         {
+         cg()->setRegisterAssignmentFlag(TR_RegisterSpilled);
+         alternativeRegister = machine->freeBestRegister(this, virtualRegister2, NULL, excludeGPR0);
+         }
+      machine->coerceRegisterAssignment(this, virtualRegister2, toRealRegister(alternativeRegister)->getRegisterNumber());
+      assignedRegister = alternativeRegister;
+      }
+   else if (assignedRegister == NULL)
+      {
+      assignedRegister = machine->assignOneRegister(this, virtualRegister2, excludeGPR0);
+      }
+   setSource2Register(assignedRegister);
+
+   virtualRegister1->unblock();
    virtualRegister2->block();
+
    assignedRegister = virtualRegister1->getAssignedRealRegister();
    if (assignedRegister == NULL)
       {
       assignedRegister = machine->assignOneRegister(this, virtualRegister1, false);
       }
-   setSource2Register(assignedRegister);
-
-   virtualRegister2->unblock();
-   virtualRegister1->block();
-
-   assignedRegister = virtualRegister2->getAssignedRealRegister();
-   if (assignedRegister == NULL)
-      {
-      assignedRegister = machine->assignOneRegister(this, virtualRegister2, false);
-      }
    setSource1Register(assignedRegister);
 
-   virtualRegister1->unblock();
+   virtualRegister2->unblock();
 
    machine->decFutureUseCountAndUnlatch(virtualRegister1);
    machine->decFutureUseCountAndUnlatch(virtualRegister2);
+   }
+
+// TR::PPCSrc3Instruction:: member functions
+
+void TR::PPCSrc3Instruction::assignRegisters(TR_RegisterKinds kindToBeAssigned)
+   {
+   TR::Register *source3Virtual = getSource3Register();
+   TR::Machine *machine = cg()->machine();
+   TR::RealRegister *assignedRegister;
+
+   source3Virtual->block();
+   TR::PPCSrc2Instruction::assignRegisters(kindToBeAssigned);
+   source3Virtual->unblock();
+
+   getSource1Register()->block();
+   getSource2Register()->block();
+
+   assignedRegister = source3Virtual->getAssignedRealRegister();
+   if (assignedRegister == NULL)
+      {
+      assignedRegister = machine->assignOneRegister(this, source3Virtual, false);
+      }
+
+   getSource2Register()->unblock();
+   getSource1Register()->unblock();
+
+   machine->decFutureUseCountAndUnlatch(source3Virtual);
+   setSource3Register(assignedRegister);
    }
 
 // TR::PPCTrg1Src2Instruction:: member functions
@@ -1028,7 +1100,7 @@ TR::PPCTrg1MemInstruction::PPCTrg1MemInstruction(
 
 bool TR::PPCTrg1MemInstruction::encodeMutexHint()
    {
-   return cg()->comp()->target().cpu.id() >= TR_PPCp6 && (getOpCodeValue() == TR::InstOpCode::lwarx || getOpCodeValue() == TR::InstOpCode::ldarx);
+   return cg()->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P6) && (getOpCodeValue() == TR::InstOpCode::lwarx || getOpCodeValue() == TR::InstOpCode::ldarx);
    }
 
 
@@ -1298,7 +1370,7 @@ void TR::PPCControlFlowInstruction::assignRegisters(TR_RegisterKinds kindToBeAss
          cg()->traceRAInstruction(cursor = generateLabelInstruction(cg(), TR::InstOpCode::label, currentNode, label2, cursor));
          break;
       case TR::InstOpCode::setbool:
-         if (cg()->comp()->target().cpu.id() >= TR_PPCp9 && getCmpOpValue() == TR::InstOpCode::fcmpu && (getOpCode2Value() == TR::InstOpCode::blt || getOpCode2Value() ==  TR::InstOpCode::bgt))
+         if (cg()->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P9) && getCmpOpValue() == TR::InstOpCode::fcmpu && (getOpCode2Value() == TR::InstOpCode::blt || getOpCode2Value() ==  TR::InstOpCode::bgt))
             {
 
             /* Used with: dcmpgt, dcmplt, fcmpgt and fcmplt*/
@@ -1368,7 +1440,7 @@ void TR::PPCControlFlowInstruction::assignRegisters(TR_RegisterKinds kindToBeAss
       case TR::InstOpCode::idiv:
          cg()->traceRAInstruction(cursor = generateTrg1Src1ImmInstruction(cg(), TR::InstOpCode::cmpi4, currentNode, getTargetRegister(0), getSourceRegister(1), -1, cursor));
          cg()->traceRAInstruction(cursor = generateTrg1Src1Instruction(cg(), TR::InstOpCode::neg, currentNode, getTargetRegister(1), getSourceRegister(0), cursor));
-         if (cg()->comp()->target().cpu.id() >= TR_PPCgp)
+         if (cg()->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_GP))
             // use PPC AS branch hint
             cg()->traceRAInstruction(cursor = generateConditionalBranchInstruction(cg(), TR::InstOpCode::beq, PPCOpProp_BranchUnlikely, currentNode, label2, getTargetRegister(0), cursor));
          else
@@ -1379,12 +1451,12 @@ void TR::PPCControlFlowInstruction::assignRegisters(TR_RegisterKinds kindToBeAss
       case TR::InstOpCode::irem:
          cg()->traceRAInstruction(cursor = generateTrg1Src1ImmInstruction(cg(), TR::InstOpCode::cmpi4, currentNode, getTargetRegister(0), getSourceRegister(1), -1, cursor));
          cg()->traceRAInstruction(cursor = generateTrg1ImmInstruction(cg(), TR::InstOpCode::li, currentNode, getTargetRegister(1), 0, cursor));
-         if (cg()->comp()->target().cpu.id() >= TR_PPCgp)
+         if (cg()->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_GP))
             // use PPC AS branch hint
             cg()->traceRAInstruction(cursor = generateConditionalBranchInstruction(cg(), TR::InstOpCode::beq, PPCOpProp_BranchUnlikely, currentNode, label2, getTargetRegister(0), cursor));
          else
             cg()->traceRAInstruction(cursor = generateConditionalBranchInstruction(cg(), TR::InstOpCode::beq, currentNode, label2, getTargetRegister(0), cursor));
-         if (cg()->comp()->target().cpu.id() >= TR_PPCp9)
+         if (cg()->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P9))
             {
             cg()->traceRAInstruction(cursor = generateTrg1Src2Instruction(cg(), TR::InstOpCode::modsw, currentNode, getTargetRegister(1), getSourceRegister(0), getSourceRegister(1), cursor));
             }
@@ -1399,7 +1471,7 @@ void TR::PPCControlFlowInstruction::assignRegisters(TR_RegisterKinds kindToBeAss
       case TR::InstOpCode::ldiv:
          cg()->traceRAInstruction(cursor = generateTrg1Src1ImmInstruction(cg(), TR::InstOpCode::cmpi8, currentNode, getTargetRegister(0), getSourceRegister(1), -1, cursor));
          cg()->traceRAInstruction(cursor = generateTrg1Src1Instruction(cg(), TR::InstOpCode::neg, currentNode, getTargetRegister(1), getSourceRegister(0), cursor));
-         if (cg()->comp()->target().cpu.id() >= TR_PPCgp)
+         if (cg()->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_GP))
             // use PPC AS branch hint
             cg()->traceRAInstruction(cursor = generateConditionalBranchInstruction(cg(), TR::InstOpCode::beq, PPCOpProp_BranchUnlikely, currentNode, label2, getTargetRegister(0), cursor));
          else
@@ -1410,12 +1482,12 @@ void TR::PPCControlFlowInstruction::assignRegisters(TR_RegisterKinds kindToBeAss
       case TR::InstOpCode::lrem:
          cg()->traceRAInstruction(cursor = generateTrg1Src1ImmInstruction(cg(), TR::InstOpCode::cmpi8, currentNode, getTargetRegister(0), getSourceRegister(1), -1, cursor));
          cg()->traceRAInstruction(cursor = generateTrg1ImmInstruction(cg(), TR::InstOpCode::li, currentNode, getTargetRegister(1), 0, cursor));
-         if (cg()->comp()->target().cpu.id() >= TR_PPCgp)
+         if (cg()->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_GP))
             // use PPC AS branch hint
             cg()->traceRAInstruction(cursor = generateConditionalBranchInstruction(cg(), TR::InstOpCode::beq, PPCOpProp_BranchUnlikely, currentNode, label2, getTargetRegister(0), cursor));
          else
             cg()->traceRAInstruction(cursor = generateConditionalBranchInstruction(cg(), TR::InstOpCode::beq, currentNode, label2, getTargetRegister(0), cursor));
-         if (cg()->comp()->target().cpu.id() >= TR_PPCp9)
+         if (cg()->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P9))
             {
             cg()->traceRAInstruction(cursor = generateTrg1Src2Instruction(cg(), TR::InstOpCode::modsd, currentNode, getTargetRegister(1), getSourceRegister(0), getSourceRegister(1), cursor));
             }
@@ -1432,19 +1504,19 @@ void TR::PPCControlFlowInstruction::assignRegisters(TR_RegisterKinds kindToBeAss
          cg()->traceRAInstruction(cursor = generateTrg1Src1Instruction(cg(), TR::InstOpCode::fctiwz, currentNode, getTargetRegister(1), getSourceRegister(0), cursor));
          cg()->traceRAInstruction(cursor = generateTrg1ImmInstruction(cg(), TR::InstOpCode::li, currentNode, getTargetRegister(2), 0, cursor));
 
-         if (cg()->comp()->target().cpu.id() < TR_PPCp8)
+         if (!cg()->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8))
             {
             tempMR = new (cg()->trHeapMemory()) TR::MemoryReference(cg()->getStackPointerRegister(), -8, 8, cg());
             cg()->traceRAInstruction(cursor = generateMemSrc1Instruction(cg(), TR::InstOpCode::stfd, currentNode, tempMR, getTargetRegister(1), cursor));
             }
 
-         if (cg()->comp()->target().cpu.id() >= TR_PPCgp)
+         if (cg()->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_GP))
             // use PPC AS branch hint
             cg()->traceRAInstruction(cursor = generateConditionalBranchInstruction(cg(), TR::InstOpCode::bne, PPCOpProp_BranchUnlikely, currentNode, label2, getTargetRegister(0), cursor));
          else
             cg()->traceRAInstruction(cursor = generateConditionalBranchInstruction(cg(), TR::InstOpCode::bne, currentNode, label2, getTargetRegister(0), cursor));
 
-         if (cg()->comp()->target().cpu.id() >= TR_PPCp8)
+         if (cg()->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8))
             cg()->traceRAInstruction(cursor = generateTrg1Src1Instruction(cg(), TR::InstOpCode::mfvsrwz, currentNode, getTargetRegister(2), getTargetRegister(1), cursor));
          else
             cg()->traceRAInstruction(cursor = generateTrg1MemInstruction(cg(), TR::InstOpCode::lwz, currentNode, getTargetRegister(2), new (cg()->trHeapMemory()) TR::MemoryReference(currentNode, *tempMR, 4, 4, cg()), cursor));
@@ -1462,13 +1534,13 @@ void TR::PPCControlFlowInstruction::assignRegisters(TR_RegisterKinds kindToBeAss
             cg()->traceRAInstruction(cursor = generateTrg1ImmInstruction(cg(), TR::InstOpCode::li, currentNode, getTargetRegister(2), 0, cursor));
             cg()->traceRAInstruction(cursor = generateTrg1ImmInstruction(cg(), TR::InstOpCode::li, currentNode, getTargetRegister(3), 0, cursor));
             }
-         if (cg()->comp()->target().cpu.id() < TR_PPCp8 || cg()->comp()->target().is32Bit())
+         if (!cg()->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8)|| cg()->comp()->target().is32Bit())
             {
             tempMR = new (cg()->trHeapMemory()) TR::MemoryReference(cg()->getStackPointerRegister(), -8, 8, cg());
             cg()->traceRAInstruction(cursor = generateMemSrc1Instruction(cg(), TR::InstOpCode::stfd, currentNode, tempMR, getTargetRegister(1), cursor));
             }
 
-         if (cg()->comp()->target().cpu.id() >= TR_PPCgp)
+         if (cg()->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_GP))
             // use PPC AS branch hint
             cg()->traceRAInstruction(cursor = generateConditionalBranchInstruction(cg(), TR::InstOpCode::bne, PPCOpProp_BranchUnlikely, currentNode, label2, getTargetRegister(0), cursor));
          else
@@ -1476,7 +1548,7 @@ void TR::PPCControlFlowInstruction::assignRegisters(TR_RegisterKinds kindToBeAss
 
          if (cg()->comp()->target().is64Bit())
             {
-            if (cg()->comp()->target().cpu.id() >= TR_PPCp8 && cg()->comp()->target().is64Bit())
+            if (cg()->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8) && cg()->comp()->target().is64Bit())
                cg()->traceRAInstruction(cursor = generateTrg1Src1Instruction(cg(), TR::InstOpCode::mfvsrd, currentNode, getTargetRegister(2), getTargetRegister(1), cursor));
             else
                cg()->traceRAInstruction(cursor = generateTrg1MemInstruction(cg(), TR::InstOpCode::ld, currentNode, getTargetRegister(2), tempMR, cursor));

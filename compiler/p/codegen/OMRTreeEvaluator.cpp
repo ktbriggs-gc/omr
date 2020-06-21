@@ -227,6 +227,7 @@ TR::Instruction *loadConstant(TR::CodeGenerator *cg, TR::Node * node, int64_t va
       TR_PPCTableOfConstants::setTOCSlot(offset, value);
       if (offset < LOWER_IMMED || offset > UPPER_IMMED)
          {
+         TR_ASSERT_FATAL_WITH_NODE(node, 0x00008000 != cg->hiValue(offset), "TOC offset (0x%x) is unexpectedly high. Can not encode upper 16 bits into an addis instruction.", offset);
          cursor = generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addis, node, trgReg, cg->getTOCBaseRegister(), cg->hiValue(offset), cursor);
          cursor = generateTrg1MemInstruction(cg,TR::InstOpCode::Op_load, node, trgReg, new (cg->trHeapMemory()) TR::MemoryReference(trgReg, LO_VALUE(offset), 8, cg), cursor);
          }
@@ -310,22 +311,22 @@ TR::Instruction *fixedSeqMemAccess(TR::CodeGenerator *cg, TR::Node *node, intptr
 
    if (cg->comp()->target().is32Bit())
       {
-      nibbles[0] = cursor = generateTrg1ImmInstruction(cg, TR::InstOpCode::lis, node, baseReg, hiAddr, cursor);
+      nibbles[0] = cursor = generateTrg1ImmInstruction(cg, TR::InstOpCode::lis, node, baseReg, (int16_t)hiAddr, cursor);
       idx = 1;
       }
    else
       {
       if (tempReg == NULL)
          {
-         nibbles[0] = cursor = generateTrg1ImmInstruction(cg, TR::InstOpCode::lis, node, baseReg, hiAddr>>32, cursor);
+         nibbles[0] = cursor = generateTrg1ImmInstruction(cg, TR::InstOpCode::lis, node, baseReg, (int16_t)(hiAddr>>32), cursor);
          nibbles[1] = cursor = generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::ori, node, baseReg, baseReg, (hiAddr>>16)&0x0000FFFF, cursor);
          cursor = generateTrg1Src1Imm2Instruction(cg, TR::InstOpCode::rldicr, node, baseReg, baseReg, 32, CONSTANT64(0xFFFFFFFF00000000), cursor);
          nibbles[2] = cursor = generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::oris, node, baseReg, baseReg, hiAddr&0x0000FFFF, cursor);
          }
       else
          {
-         nibbles[0] = cursor = generateTrg1ImmInstruction(cg, TR::InstOpCode::lis, node, tempReg, hiAddr>>32, cursor);
-         nibbles[2] = cursor = generateTrg1ImmInstruction(cg, TR::InstOpCode::lis, node, baseReg, hiAddr&0x0000FFFF, cursor);
+         nibbles[0] = cursor = generateTrg1ImmInstruction(cg, TR::InstOpCode::lis, node, tempReg, (int16_t)(hiAddr>>32), cursor);
+         nibbles[2] = cursor = generateTrg1ImmInstruction(cg, TR::InstOpCode::lis, node, baseReg, (int16_t)hiAddr, cursor);
          nibbles[1] = cursor = generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::ori, node, tempReg, tempReg, (hiAddr>>16)&0x0000FFFF, cursor);
          cursor = generateTrg1Src1Imm2Instruction(cg, TR::InstOpCode::rldimi, node, baseReg, tempReg, 32, CONSTANT64(0xFFFFFFFF00000000), cursor);
          }
@@ -405,7 +406,7 @@ TR::Register *OMR::Power::TreeEvaluator::iloadEvaluator(TR::Node *node, TR::Code
 
    if (needSync)
       {
-      TR::TreeEvaluator::postSyncConditions(node, cg, tempReg, tempMR, cg->comp()->target().cpu.id() >= TR_PPCp7 ? TR::InstOpCode::lwsync : TR::InstOpCode::isync);
+      TR::TreeEvaluator::postSyncConditions(node, cg, tempReg, tempMR, cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7) ? TR::InstOpCode::lwsync : TR::InstOpCode::isync);
       }
 
    tempMR->decNodeReferenceCounts(cg);
@@ -559,7 +560,7 @@ TR::Register *OMR::Power::TreeEvaluator::aloadEvaluator(TR::Node *node, TR::Code
 
    if (needSync)
       {
-      TR::TreeEvaluator::postSyncConditions(node, cg, tempReg, tempMR, cg->comp()->target().cpu.id() >= TR_PPCp7 ? TR::InstOpCode::lwsync : TR::InstOpCode::isync);
+      TR::TreeEvaluator::postSyncConditions(node, cg, tempReg, tempMR, cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7) ? TR::InstOpCode::lwsync : TR::InstOpCode::isync);
       }
    tempMR->decNodeReferenceCounts(cg);
 
@@ -600,7 +601,7 @@ TR::Register *OMR::Power::TreeEvaluator::lloadEvaluator(TR::Node *node, TR::Code
          generateTrg1MemInstruction(cg, TR::InstOpCode::ld, node, trgReg, tempMR);
       if (needSync)
          {
-         TR::TreeEvaluator::postSyncConditions(node, cg, trgReg, tempMR, cg->comp()->target().cpu.id() >= TR_PPCp7 ? TR::InstOpCode::lwsync : TR::InstOpCode::isync);
+         TR::TreeEvaluator::postSyncConditions(node, cg, trgReg, tempMR, cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7) ? TR::InstOpCode::lwsync : TR::InstOpCode::isync);
          }
 
       tempMR->decNodeReferenceCounts(cg);
@@ -632,7 +633,7 @@ TR::Register *OMR::Power::TreeEvaluator::lloadEvaluator(TR::Node *node, TR::Code
             {
             TR::MemoryReference *tempMRStore1 = new (cg->trHeapMemory()) TR::MemoryReference(node, location->getSymbolReference(), 8, cg);
             generateMemSrc1Instruction(cg, TR::InstOpCode::stfd, node, tempMRStore1, doubleReg);
-            generateInstruction(cg, cg->comp()->target().cpu.id() >= TR_PPCp7 ? TR::InstOpCode::lwsync : TR::InstOpCode::isync, node);
+            generateInstruction(cg, cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7) ? TR::InstOpCode::lwsync : TR::InstOpCode::isync, node);
             tempMRStore1->decNodeReferenceCounts(cg);
             }
          tempMRLoad1->forceIndexedForm(node, cg);
@@ -666,14 +667,14 @@ TR::Register *OMR::Power::TreeEvaluator::lloadEvaluator(TR::Node *node, TR::Code
                TR::MemoryReference *tempMRLoad1 = new (cg->trHeapMemory()) TR::MemoryReference(node, *tempMRStore1, 0, 4, cg);
                TR::MemoryReference *tempMRLoad2 = new (cg->trHeapMemory()) TR::MemoryReference(node, *tempMRStore1, 4, 4, cg);
                generateMemSrc1Instruction(cg, TR::InstOpCode::stfd, node, tempMRStore1, doubleReg);
-               generateInstruction(cg, cg->comp()->target().cpu.id() >= TR_PPCp7 ? TR::InstOpCode::lwsync : TR::InstOpCode::isync, node);
+               generateInstruction(cg, cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7) ? TR::InstOpCode::lwsync : TR::InstOpCode::isync, node);
                generateTrg1MemInstruction(cg, TR::InstOpCode::lwz, node, highReg, tempMRLoad1);
                generateTrg1MemInstruction(cg, TR::InstOpCode::lwz, node, lowReg, tempMRLoad2);
                cg->freeSpill(location, 8, 0);
                }
             else
                {
-               if (cg->comp()->target().cpu.id() >= TR_PPCp8)
+               if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8))
                   {
                   TR::Register * tmp1 = cg->allocateRegister(TR_FPR);
                   generateMvFprGprInstructions(cg, node, fpr2gprHost32, false, highReg, lowReg, doubleReg, tmp1);
@@ -763,7 +764,7 @@ TR::Register *OMR::Power::TreeEvaluator::commonByteLoadEvaluator(TR::Node *node,
    generateTrg1MemInstruction(cg, TR::InstOpCode::lbz, node, trgReg, tempMR);
    if (needSync)
       {
-      TR::TreeEvaluator::postSyncConditions(node, cg, trgReg, tempMR, cg->comp()->target().cpu.id() >= TR_PPCp7 ? TR::InstOpCode::lwsync : TR::InstOpCode::isync);
+      TR::TreeEvaluator::postSyncConditions(node, cg, trgReg, tempMR, cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7) ? TR::InstOpCode::lwsync : TR::InstOpCode::isync);
       }
 
    if (signExtend)
@@ -816,7 +817,7 @@ TR::Register *OMR::Power::TreeEvaluator::sloadEvaluator(TR::Node *node, TR::Code
 
    if (needSync)
       {
-      TR::TreeEvaluator::postSyncConditions(node, cg, tempReg, tempMR, cg->comp()->target().cpu.id() >= TR_PPCp7 ? TR::InstOpCode::lwsync : TR::InstOpCode::isync);
+      TR::TreeEvaluator::postSyncConditions(node, cg, tempReg, tempMR, cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7) ? TR::InstOpCode::lwsync : TR::InstOpCode::isync);
       }
 
    tempMR->decNodeReferenceCounts(cg);
@@ -839,7 +840,7 @@ TR::Register *OMR::Power::TreeEvaluator::cloadEvaluator(TR::Node *node, TR::Code
    generateTrg1MemInstruction(cg, TR::InstOpCode::lhz, node, tempReg, tempMR);
    if (needSync)
       {
-      TR::TreeEvaluator::postSyncConditions(node, cg, tempReg, tempMR, cg->comp()->target().cpu.id() >= TR_PPCp7 ? TR::InstOpCode::lwsync : TR::InstOpCode::isync);
+      TR::TreeEvaluator::postSyncConditions(node, cg, tempReg, tempMR, cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7) ? TR::InstOpCode::lwsync : TR::InstOpCode::isync);
       }
 
    tempMR->decNodeReferenceCounts(cg);
@@ -1231,7 +1232,7 @@ TR::Register *OMR::Power::TreeEvaluator::lstoreEvaluator(TR::Node *node, TR::Cod
                   tempMRStore2->forceIndexedForm(node, cg);
                   TR::Register *highReg = cg->allocateRegister();
                   TR::Register *lowReg = cg->allocateRegister();
-                  if (cg->comp()->target().cpu.id() >= TR_PPCp8)
+                  if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8))
                      {
                      TR::Register * tmp1 = cg->allocateRegister(TR_FPR);
                      generateMvFprGprInstructions(cg, node, fpr2gprHost32, false, highReg, lowReg, doubleReg, tmp1);
@@ -1253,7 +1254,7 @@ TR::Register *OMR::Power::TreeEvaluator::lstoreEvaluator(TR::Node *node, TR::Cod
                }
             else
                {
-               if (cg->comp()->target().cpu.id() >= TR_PPCp8)
+               if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8))
                   {
                   TR::Register * tmp1 = cg->allocateRegister(TR_FPR);
                   generateMvFprGprInstructions(cg, node, gpr2fprHost32, false, doubleReg, valueReg->getHighOrder(), valueReg->getLowOrder(), tmp1);
@@ -1827,7 +1828,7 @@ TR::Register *OMR::Power::TreeEvaluator::viremEvaluator(TR::Node *node, TR::Code
       TR::Register *trgAReg = cg->allocateRegister();
       generateTrg1MemInstruction(cg, TR::InstOpCode::lwa, node, srcA1Reg, new (cg->trHeapMemory()) TR::MemoryReference(srcV1IdxReg, i * 4, 4, cg));
       generateTrg1MemInstruction(cg, TR::InstOpCode::lwa, node, srcA2Reg, new (cg->trHeapMemory()) TR::MemoryReference(srcV2IdxReg, i * 4, 4, cg));
-      if (cg->comp()->target().cpu.id() >= TR_PPCp9)
+      if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P9))
          {
          generateTrg1Src2Instruction(cg, TR::InstOpCode::modsw, node, trgAReg, srcA1Reg, srcA2Reg);
          }
@@ -1897,7 +1898,7 @@ TR::Register *OMR::Power::TreeEvaluator::vigetelemEvaluator(TR::Node *node, TR::
 TR::Register *OMR::Power::TreeEvaluator::getvelemEvaluator(TR::Node *node, TR::CodeGenerator *cg)
    {
    static bool disableDirectMove = feGetEnv("TR_disableDirectMove") ? true : false;
-   if (!disableDirectMove && cg->comp()->target().cpu.id() >= TR_PPCp8 && cg->comp()->target().cpu.getPPCSupportsVSX())
+   if (!disableDirectMove && cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8) && cg->comp()->target().cpu.supportsFeature(OMR_FEATURE_PPC_HAS_VSX))
       {
       return TR::TreeEvaluator::getvelemDirectMoveHelper(node, cg);
       }
@@ -3060,8 +3061,7 @@ static void inlineArrayCopy(TR::Node *node, int64_t byteLen, TR::Register *src, 
    store =TR::InstOpCode::Op_st;
 
    static bool disableLEArrayCopyInline  = (feGetEnv("TR_disableLEArrayCopyInline") != NULL);
-   TR_Processor  processor = cg->comp()->target().cpu.id();
-   bool  supportsLEArrayCopyInline = (processor >= TR_PPCp8) && !disableLEArrayCopyInline && cg->comp()->target().cpu.isLittleEndian() && cg->comp()->target().cpu.hasFPU() && cg->comp()->target().is64Bit();
+   bool  supportsLEArrayCopyInline = (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8)) && !disableLEArrayCopyInline && cg->comp()->target().cpu.isLittleEndian() && cg->comp()->target().cpu.hasFPU() && cg->comp()->target().is64Bit();
 
    TR::RealRegister::RegNum tempDep, srcDep, dstDep, cndDep;
    tempDep = TR::RealRegister::NoReg;
@@ -4576,9 +4576,7 @@ TR::Register *OMR::Power::TreeEvaluator::arraycopyEvaluator(TR::Node *node, TR::
       }
 
    static bool disableVSXArrayCopy  = (feGetEnv("TR_disableVSXArrayCopy") != NULL);
-   TR_Processor  processor = cg->comp()->target().cpu.id();
-
-   bool  supportsVSX = (processor >= TR_PPCp8) && !disableVSXArrayCopy && cg->comp()->target().cpu.getPPCSupportsVSX();
+   bool  supportsVSX = (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8)) && !disableVSXArrayCopy && cg->comp()->target().cpu.supportsFeature(OMR_FEATURE_PPC_HAS_VSX);
 
    static bool disableLEArrayCopyHelper  = (feGetEnv("TR_disableLEArrayCopyHelper") != NULL);
    static bool disableVSXArrayCopyInlining = (feGetEnv("TR_enableVSXArrayCopyInlining") == NULL); // Disabling due to a performance regression
@@ -4601,7 +4599,7 @@ TR::Register *OMR::Power::TreeEvaluator::arraycopyEvaluator(TR::Node *node, TR::
 
    TR::RegisterDependencyConditions *conditions;
    int32_t numDeps = 0;
-   if(processor >= TR_PPCp8 && supportsVSX)
+   if(cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8) && supportsVSX)
       {
       numDeps = cg->comp()->target().is64Bit() ? 10 : 13;
       if (supportsLEArrayCopy)
@@ -4614,7 +4612,7 @@ TR::Register *OMR::Power::TreeEvaluator::arraycopyEvaluator(TR::Node *node, TR::
    else
    if (cg->comp()->target().is64Bit())
       {
-      if (processor >= TR_PPCp6)
+      if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P6))
          numDeps = 12;
       else
          numDeps = 8;
@@ -4649,7 +4647,7 @@ TR::Register *OMR::Power::TreeEvaluator::arraycopyEvaluator(TR::Node *node, TR::
    TR::addDependency(conditions, tmp1Reg, TR::RealRegister::gr5, TR_GPR, cg);
    TR::addDependency(conditions, tmp2Reg, TR::RealRegister::gr6, TR_GPR, cg);
 
-   if(processor >= TR_PPCp8 && supportsVSX)
+   if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8) && supportsVSX)
       {
       vec0Reg = cg->allocateRegister(TR_VRF);
       vec1Reg = cg->allocateRegister(TR_VRF);
@@ -4687,7 +4685,7 @@ TR::Register *OMR::Power::TreeEvaluator::arraycopyEvaluator(TR::Node *node, TR::
          TR::addDependency(conditions, NULL, TR::RealRegister::fp11, TR_FPR, cg);
          }
       }
-   else if (processor >= TR_PPCp6)
+   else if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P6))
       {
       // stfdp arrayCopy used
       TR::addDependency(conditions, NULL, TR::RealRegister::fp8, TR_FPR, cg);
@@ -4708,28 +4706,28 @@ TR::Register *OMR::Power::TreeEvaluator::arraycopyEvaluator(TR::Node *node, TR::
 
          if (node->isForwardArrayCopy())
             {
-            if(processor >= TR_PPCp8 && supportsVSX)
+            if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8) && supportsVSX)
                {
                helper = TR_PPCforwardQuadWordArrayCopy_vsx;
                }
             else
             if (node->isWordElementArrayCopy())
                {
-               if (processor >= TR_PPCp6)
+               if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P6))
                   helper = TR_PPCforwardWordArrayCopy_dp;
                else
                   helper = TR_PPCforwardWordArrayCopy;
                }
             else if (node->isHalfWordElementArrayCopy())
                {
-               if (processor >= TR_PPCp6 )
+               if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P6))
                   helper = TR_PPCforwardHalfWordArrayCopy_dp;
                else
                   helper = TR_PPCforwardHalfWordArrayCopy;
                }
             else
                {
-               if (processor >= TR_PPCp6)
+               if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P6))
                   helper = TR_PPCforwardArrayCopy_dp;
                else
                   {
@@ -4739,28 +4737,28 @@ TR::Register *OMR::Power::TreeEvaluator::arraycopyEvaluator(TR::Node *node, TR::
             }
          else // We are not sure it is forward or we have to do backward
             {
-            if(processor >= TR_PPCp8 && supportsVSX)
+            if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8) && supportsVSX)
                {
                helper = TR_PPCquadWordArrayCopy_vsx;
                }
             else
             if (node->isWordElementArrayCopy())
                {
-               if (processor >= TR_PPCp6)
+               if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P6))
                   helper = TR_PPCwordArrayCopy_dp;
                else
                   helper = TR_PPCwordArrayCopy;
                }
             else if (node->isHalfWordElementArrayCopy())
                {
-               if (processor >= TR_PPCp6)
+               if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P6))
                   helper = TR_PPChalfWordArrayCopy_dp;
                else
                   helper = TR_PPChalfWordArrayCopy;
                }
             else
                {
-               if (processor >= TR_PPCp6)
+               if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P6))
                   helper = TR_PPCarrayCopy_dp;
                else
                   {
@@ -5173,8 +5171,8 @@ static TR::Register *inlineSimpleAtomicUpdate(TR::Node *node, bool isAddOp, bool
           && !deltaChild->getRegister()
           && (deltaChild->getDataType() == TR::Int32
                  || (deltaChild->getDataType() == TR::Int64
-                        && deltaChild->getLongInt() <= UPPER_IMMED
-                        && deltaChild->getLongInt() >= LOWER_IMMED)))
+                        && deltaChild->getLongInt() <= 0x000000007FFFFFFFL
+                        && deltaChild->getLongInt() >= 0xFFFFFFFF80000000L)))
       {
       const int64_t deltaLong = (deltaChild->getDataType() == TR::Int64)
                                    ? deltaChild->getLongInt()
@@ -5188,9 +5186,7 @@ static TR::Register *inlineSimpleAtomicUpdate(TR::Node *node, bool isAddOp, bool
          // avoid evaluating immediates for add operations
          isDeltaImmediate = true;
          }
-      else if (deltaLong & 0xFFFF == 0
-                  && ((deltaLong >> 32) == -1
-                         || (deltaLong >> 32) == 0))
+      else if ((delta == deltaLong) && (0 == (deltaLong & 0xFFFF)))
          {
          // avoid evaluating shifted immediates for add operations
          isDeltaImmediate = true;
@@ -5233,14 +5229,11 @@ static TR::Register *inlineSimpleAtomicUpdate(TR::Node *node, bool isAddOp, bool
       newValueReg = cg->allocateRegister();
 
       if (isDeltaImmediateShifted)
-         generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addis, node,
-               newValueReg, oldValueReg, ((delta & 0xFFFF0000) >> 16));
+         generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addis, node, newValueReg, oldValueReg, delta >> 16);
       else if (isDeltaImmediate)
-         generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addi, node,
-               newValueReg, oldValueReg, delta);
+         generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addi, node, newValueReg, oldValueReg, delta);
       else
-         generateTrg1Src2Instruction(cg, TR::InstOpCode::add, node, newValueReg,
-               oldValueReg, deltaReg);
+         generateTrg1Src2Instruction(cg, TR::InstOpCode::add, node, newValueReg, oldValueReg, deltaReg);
       }
    else
       {
@@ -5477,8 +5470,16 @@ TR::Register *OMR::Power::TreeEvaluator::loadaddrEvaluator(TR::Node *node, TR::C
                   }
                else
                   {
-                  generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addis, node, resultReg, mref->getBaseRegister(), ((offset>>16) + ((offset & (1<<15))?1:0)) & 0x0000ffff);
-                  generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addi2, node, resultReg, resultReg, offset & 0x0000ffff);
+                  if (0x00008000 == HI_VALUE(offset))
+                     {
+                     generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addis, node, resultReg, mref->getBaseRegister(), 0x7FFF);
+                     generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addis, node, resultReg, resultReg, 0x1);
+                     }
+                  else
+                     {
+                     generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addis, node, resultReg, mref->getBaseRegister(), HI_VALUE(offset));
+                     }
+                  generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addi2, node, resultReg, resultReg, LO_VALUE(offset));
                   }
                }
            }
@@ -5653,7 +5654,7 @@ TR::Register *OMR::Power::TreeEvaluator::BBStartEvaluator(TR::Node *node, TR::Co
                                TR::Node::createRelative32BitFenceNode(node, &block->getInstructionBoundaries()._startPC));
 
    if (block->firstBlockInLoop() && !block->isCold())
-      generateAlignmentNopInstruction(cg, node, 32);
+      generateAlignmentNopInstruction(cg, node, cg->getHotLoopAlignment());
 
    TR::Instruction *labelInst = NULL;
 

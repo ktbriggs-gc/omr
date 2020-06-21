@@ -116,7 +116,7 @@ TR::Register *OMR::Power::TreeEvaluator::fbits2iEvaluator(TR::Node *node, TR::Co
       }
    else
       {
-      floatReg = cg->comp()->target().cpu.id() >= TR_PPCp8 ? cg->gprClobberEvaluate(child) : cg->evaluate(child);
+      floatReg = cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8) ? cg->gprClobberEvaluate(child) : cg->evaluate(child);
       generateMvFprGprInstructions(cg, node, fpr2gprSp, cg->comp()->target().is64Bit(),target, floatReg);
       childEval = floatReg == child->getRegister();
       cg->decReferenceCount(child);
@@ -204,7 +204,7 @@ TR::Register *OMR::Power::TreeEvaluator::lbits2dEvaluator(TR::Node *node, TR::Co
       else
          {
          TR::Register *longReg = cg->evaluate(child);
-         if (cg->comp()->target().cpu.id() >= TR_PPCp8)
+         if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8))
             {
             TR::Register * tmp1 = cg->allocateRegister(TR_FPR);
             generateMvFprGprInstructions(cg, node, gpr2fprHost32, false, target, longReg->getHighOrder(), longReg->getLowOrder(), tmp1);
@@ -273,7 +273,7 @@ TR::Register *OMR::Power::TreeEvaluator::dbits2lEvaluator(TR::Node *node, TR::Co
          {
          highReg = cg->allocateRegister();
          lowReg = cg->allocateRegister();
-         if (cg->comp()->target().cpu.id() >= TR_PPCp8)
+         if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8))
             {
             TR::Register * tmp1 = cg->allocateRegister(TR_FPR);
             generateMvFprGprInstructions(cg, node, fpr2gprHost32, false, highReg, lowReg, doubleReg, tmp1);
@@ -358,6 +358,8 @@ static TR::Register *fconstHandler(TR::Node *node, TR::CodeGenerator *cg, float 
          if (offset<LOWER_IMMED || offset>UPPER_IMMED)
             {
             srcRegister = cg->allocateRegister();
+
+            TR_ASSERT_FATAL_WITH_NODE(node, 0x00008000 != HI_VALUE(offset), "TOC offset (0x%x) is unexpectedly high. Can not encode upper 16 bits into an addis instruction.", offset);
             generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addis, node, srcRegister, cg->getTOCBaseRegister(), HI_VALUE(offset));
             generateTrg1MemInstruction(cg, TR::InstOpCode::lfs, node, trgRegister, new (cg->trHeapMemory()) TR::MemoryReference(srcRegister, LO_VALUE(offset), 4, cg));
             cg->stopUsingRegister(srcRegister);
@@ -433,6 +435,8 @@ TR::Register *OMR::Power::TreeEvaluator::dconstEvaluator(TR::Node *node, TR::Cod
          if (offset<LOWER_IMMED || offset>UPPER_IMMED)
             {
             srcRegister = cg->allocateRegister();
+
+            TR_ASSERT_FATAL_WITH_NODE(node, 0x00008000 != HI_VALUE(offset), "TOC offset (0x%x) is unexpectedly high. Can not encode upper 16 bits into an addis instruction.", offset);
             generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::addis, node, srcRegister, cg->getTOCBaseRegister(), HI_VALUE(offset));
 
             TR::MemoryReference *memRef = new (cg->trHeapMemory()) TR::MemoryReference(srcRegister, LO_VALUE(offset), 8, cg);
@@ -646,7 +650,7 @@ TR::Register *OMR::Power::TreeEvaluator::vsplatsEvaluator(TR::Node *node, TR::Co
       TR::Register *tempReg = cg->evaluate(child);
       TR::Register *resReg = cg->allocateRegister(TR_VRF);
 
-      if (!disableDirectMove && cg->comp()->target().cpu.id() >= TR_PPCp8 && cg->comp()->target().cpu.getPPCSupportsVSX())
+      if (!disableDirectMove && cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8) && cg->comp()->target().cpu.supportsFeature(OMR_FEATURE_PPC_HAS_VSX))
          {
          generateMvFprGprInstructions(cg, node, gprLow2fpr, false, resReg, tempReg);
          generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::xxspltw, node, resReg, resReg, 0x1);
@@ -678,7 +682,7 @@ TR::Register *OMR::Power::TreeEvaluator::vsplatsEvaluator(TR::Node *node, TR::Co
       TR::Register *srcReg = cg->evaluate(child);
       TR::Register *trgReg = cg->allocateRegister(TR_VRF);
 
-      if (!disableDirectMove && cg->comp()->target().cpu.id() >= TR_PPCp8 && cg->comp()->target().cpu.getPPCSupportsVSX())
+      if (!disableDirectMove && cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8) && cg->comp()->target().cpu.supportsFeature(OMR_FEATURE_PPC_HAS_VSX))
          {
          if (cg->comp()->target().is64Bit())
             {
@@ -1386,7 +1390,7 @@ TR::Register *OMR::Power::TreeEvaluator::int2dbl(TR::Node * node, TR::Register *
          }
       else
          {
-         if (cg->comp()->target().cpu.id() >= TR_PPCp6 && node->getOpCodeValue() != TR::iu2f && node->getOpCodeValue() != TR::iu2d)
+         if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P6) && node->getOpCodeValue() != TR::iu2f && node->getOpCodeValue() != TR::iu2d)
             generateMvFprGprInstructions(cg, node, gprLow2fpr, false, trgReg, srcReg);
          else
             {
@@ -1397,7 +1401,7 @@ TR::Register *OMR::Power::TreeEvaluator::int2dbl(TR::Node * node, TR::Register *
             else
                generateTrg1Src1ImmInstruction(cg, TR::InstOpCode::srawi, node, tempReg, srcReg, 31);
 
-            if (cg->comp()->target().cpu.id() >= TR_PPCp8)
+            if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8))
                {
                TR::Register * tmp1 = cg->allocateRegister(TR_FPR);
                generateMvFprGprInstructions(cg, node, gpr2fprHost32, false, trgReg, tempReg, srcReg, tmp1);
@@ -1408,7 +1412,7 @@ TR::Register *OMR::Power::TreeEvaluator::int2dbl(TR::Node * node, TR::Register *
             cg->stopUsingRegister(tempReg);
             }
          }
-      if ((cg->comp()->target().cpu.id() >= TR_PPCp7) &&
+      if ((cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7)) &&
           (node->getOpCodeValue() == TR::i2f || node->getOpCodeValue() == TR::iu2f))
          {
          // Generate the code to produce the float result here, setting the register flag is done afterwards
@@ -1456,9 +1460,9 @@ TR::Register *OMR::Power::TreeEvaluator::i2fEvaluator(TR::Node *node, TR::CodeGe
    TR::Register *tempReg;
    TR::Register *trgReg;
 
-   if (((cg->comp()->target().cpu.id() >= TR_PPCp7 &&
+   if (((cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7) &&
        (node->getOpCodeValue() == TR::iu2f && (child->getOpCodeValue() == TR::iuload || child->getOpCodeValue() == TR::iuloadi))) ||
-       (cg->comp()->target().cpu.id() >= TR_PPCp6 &&
+       (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P6) &&
        (node->getOpCodeValue() == TR::i2f && (child->getOpCodeValue() == TR::iload || child->getOpCodeValue() == TR::iloadi)))) &&
        child->getReferenceCount() == 1 && child->getRegister() == NULL &&
        !(child->getSymbolReference()->getSymbol()->isSyncVolatile() && cg->comp()->target().isSMP()))
@@ -1470,7 +1474,7 @@ TR::Register *OMR::Power::TreeEvaluator::i2fEvaluator(TR::Node *node, TR::CodeGe
       if (node->getOpCodeValue() == TR::i2f)
          {
          generateTrg1MemInstruction(cg, TR::InstOpCode::lfiwax, node, tempReg, tempMR);
-         if (cg->comp()->target().cpu.id() >= TR_PPCp7)
+         if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7))
             {
             generateTrg1Src1Instruction(cg, TR::InstOpCode::fcfids, node, trgReg, tempReg);
             }
@@ -1504,9 +1508,9 @@ TR::Register *OMR::Power::TreeEvaluator::i2dEvaluator(TR::Node *node, TR::CodeGe
    TR::Node     *child      = node->getFirstChild();
    TR::Register *trgReg;
 
-   if (((cg->comp()->target().cpu.id() >= TR_PPCp7 &&
+   if (((cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7) &&
        (node->getOpCodeValue() == TR::iu2d && (child->getOpCodeValue() == TR::iuload || child->getOpCodeValue() == TR::iuloadi))) ||
-       (cg->comp()->target().cpu.id() >= TR_PPCp6 &&
+       (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P6) &&
        node->getOpCodeValue() == TR::i2d && (child->getOpCodeValue() == TR::iload || child->getOpCodeValue() == TR::iloadi))) &&
        child->getReferenceCount()==1 &&
        child->getRegister() == NULL &&
@@ -1551,7 +1555,7 @@ TR::Register *OMR::Power::TreeEvaluator::long2dbl(TR::Node *node, TR::CodeGenera
          generateMvFprGprInstructions(cg, node, gpr2fprHost64, false, trgReg, srcReg);
       else
          {
-         if (cg->comp()->target().cpu.id() >= TR_PPCp8)
+         if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8))
             {
             TR::Register * tmp1 = cg->allocateRegister(TR_FPR);
             generateMvFprGprInstructions(cg, node, gpr2fprHost32, false, trgReg, srcReg->getHighOrder(), srcReg->getLowOrder(), tmp1);
@@ -1605,14 +1609,14 @@ TR::Register *OMR::Power::TreeEvaluator::long2float(TR::Node *node, TR::CodeGene
    TR::Register *srcReg  = cg->evaluate(child);
    TR::Register *trgReg     = cg->allocateSinglePrecisionRegister(TR_FPR);
 
-   if (cg->comp()->target().cpu.id() >= TR_PPCp7 &&
+   if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7) &&
       (cg->is64BitProcessor() || (cg->comp()->compileRelocatableCode() && cg->comp()->target().is64Bit())))
       {
       if (cg->comp()->target().is64Bit())
          generateMvFprGprInstructions(cg, node, gpr2fprHost64, false, trgReg, srcReg);
       else
          {
-         if (cg->comp()->target().cpu.id() >= TR_PPCp8)
+         if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P8))
             {
             TR::Register * tmp1 = cg->allocateRegister(TR_FPR);
             generateMvFprGprInstructions(cg, node, gpr2fprHost32, false, trgReg, srcReg->getHighOrder(), srcReg->getLowOrder(), tmp1);
@@ -1693,7 +1697,7 @@ TR::Register *OMR::Power::TreeEvaluator::l2fEvaluator(TR::Node *node, TR::CodeGe
    {
    TR::Register *trgReg;
    TR::Node     *child      = node->getFirstChild();
-   if (cg->comp()->target().cpu.id() >= TR_PPCp7 &&
+   if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7) &&
        node->getOpCodeValue() == TR::l2f &&
        (child->getOpCodeValue() == TR::lload || child->getOpCodeValue() == TR::lloadi) &&
        child->getReferenceCount()==1 &&
@@ -1721,8 +1725,7 @@ TR::Register *OMR::Power::TreeEvaluator::l2dEvaluator(TR::Node *node, TR::CodeGe
    {
    TR::Register *trgReg;
    TR::Node     *child      = node->getFirstChild();
-   if (
-       cg->comp()->target().cpu.id() >= TR_PPCp7 &&
+   if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P7) &&
        node->getOpCodeValue() == TR::l2d &&
        (child->getOpCodeValue() == TR::lload || child->getOpCodeValue() == TR::lloadi) &&
        child->getReferenceCount()==1 &&
@@ -2029,7 +2032,7 @@ TR::Register *OMR::Power::TreeEvaluator::dcmpneEvaluator(TR::Node *node, TR::Cod
 TR::Register *OMR::Power::TreeEvaluator::dcmpltEvaluator(TR::Node *node, TR::CodeGenerator *cg)
    {
    int64_t imm = 0;
-   if (cg->comp()->target().cpu.id() >= TR_PPCp9)
+   if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P9))
       {
       imm = (TR::RealRegister::CRCC_GT <<  TR::RealRegister::pos_RT | TR::RealRegister::CRCC_LT <<  TR::RealRegister::pos_RA | TR::RealRegister::CRCC_LT << TR::RealRegister::pos_RB);
       }
@@ -2278,7 +2281,7 @@ static TR::Register *compareFloatAndSetOrderedBoolean(TR::InstOpCode::Mnemonic b
       cfop->addTargetRegister(trgReg);
       cfop->addSourceRegister(src1Reg);
       cfop->addSourceRegister(src2Reg);
-      if (cg->comp()->target().cpu.id() >= TR_PPCp9 && branchOp2 == TR::InstOpCode::bad && imm != 0)
+      if (cg->comp()->target().cpu.isAtLeast(OMR_PROCESSOR_PPC_P9) && branchOp2 == TR::InstOpCode::bad && imm != 0)
          {
          cfop->addSourceImmediate(imm);
          }

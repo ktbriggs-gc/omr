@@ -162,31 +162,6 @@ public:
 
    virtual void fillBinaryEncodingFields(uint32_t *cursor);
 
-   void insertImmediateField(uint32_t *instruction)
-      {
-      if (getOpCode().useAlternateFormatx())
-         {
-         // populate 4-bit U field at bit 16
-         TR_ASSERT(getOpCodeValue() == TR::InstOpCode::mtfsfi, "Wrong usage of U field");
-         *instruction |= (_sourceImmediate << 12) & 0xffff;
-         }
-      else if (getOpCode().isTMAbort())
-         {
-         // populate 5-bit SI field at bit 16
-         *instruction |= (_sourceImmediate << 11) & 0xffff;
-         }
-      else
-         {
-         *instruction |= _sourceImmediate & 0xffff;
-         }
-      }
-
-   virtual void updateImmediateField(uint32_t imm)
-	 {
-	 _sourceImmediate = imm;
-	 insertImmediateField((uint32_t*)getBinaryEncoding());
-	 }
-
 // The following safe virtual downcast method is used under debug only
 // for assertion checking
 #if defined(DEBUG) || defined(PROD_WITH_ASSUMES)
@@ -717,15 +692,6 @@ class PPCTrg1Instruction : public TR::Instruction
 
    virtual TR::Register *getTargetRegister(uint32_t i)       {if (i==0) return _target1Register; return NULL;}
 
-   void insertTargetRegister(uint32_t *instruction)
-      {
-      TR::RealRegister *target = toRealRegister(_target1Register);
-      if (isVSX())
-         target->setRegisterFieldXT(instruction);
-      else
-         target->setRegisterFieldRT(instruction);
-      }
-
    virtual void fillBinaryEncodingFields(uint32_t *cursor);
 
    virtual void assignRegisters(TR_RegisterKinds kindToBeAssigned);
@@ -771,44 +737,7 @@ class PPCTrg1ImmInstruction : public PPCTrg1Instruction
    uint32_t getSourceImmediate()            {return _sourceImmediate;}
    uint32_t setSourceImmediate(uint32_t si) {return (_sourceImmediate = si);}
 
-   virtual void updateImmediateField(uint32_t imm)
-         {
-         _sourceImmediate = imm;
-         insertImmediateField((uint32_t*)getBinaryEncoding());
-         }
-
    virtual void fillBinaryEncodingFields(uint32_t *cursor);
-
-   void insertImmediateField(uint32_t *instruction)
-      {
-      if (!isVMX())
-         {
-         if (getOpCodeValue() == TR::InstOpCode::addpcis)
-            {
-            // populate d0, d1 and d2 fields
-            *instruction |= ((_sourceImmediate >> 6) & 0x3ff) << 6;
-            *instruction |= ((_sourceImmediate >> 1) & 0x1f) << 16;
-            *instruction |= _sourceImmediate & 0x1;
-            }
-         else if (getOpCodeValue() == TR::InstOpCode::setb ||
-                  getOpCodeValue() == TR::InstOpCode::mcrfs)
-            {
-            // populate 3-bit BFA field
-            *instruction |= (_sourceImmediate & 0x7) << 18;
-            }
-         else if (getOpCodeValue() == TR::InstOpCode::darn)
-            {
-            // populate 2-bit L field
-            *instruction |= (_sourceImmediate & 0x3) << 16;
-            }
-         else
-            {
-            *instruction |= _sourceImmediate & 0xffff;
-            }
-         }
-      else
-         *instruction |= (_sourceImmediate & 0x1f) << 16;
-      }
 
    void addMetaDataForCodeAddress(uint8_t *cursor);
 
@@ -831,21 +760,11 @@ class PPCSrc2Instruction : public TR::Instruction
    public:
 
    PPCSrc2Instruction(TR::InstOpCode::Mnemonic op, TR::Node *n, TR::Register   *s1reg,
-                         TR::Register   *s2reg, TR::CodeGenerator *codeGen)
-      : TR::Instruction(op, n, codeGen), _source1Register(s1reg), _source2Register(s2reg)
-      {
-      useRegister(s1reg);
-      useRegister(s2reg);
-      }
+                         TR::Register   *s2reg, TR::CodeGenerator *codeGen);
 
    PPCSrc2Instruction(TR::InstOpCode::Mnemonic op, TR::Node * n, TR::Register   *s1reg,
                          TR::Register    *s2reg,
-                         TR::Instruction *precedingInstruction, TR::CodeGenerator *codeGen)
-      : TR::Instruction(op, n, precedingInstruction, codeGen), _source1Register(s1reg), _source2Register(s2reg)
-      {
-      useRegister(s1reg);
-      useRegister(s2reg);
-      }
+                         TR::Instruction *precedingInstruction, TR::CodeGenerator *codeGen);
 
    virtual Kind getKind() { return IsSrc2; }
 
@@ -877,6 +796,64 @@ class PPCSrc2Instruction : public TR::Instruction
       {
       state->removeVirtualRegister(getSource1Register());
       state->removeVirtualRegister(getSource2Register());
+      }
+   };
+
+class PPCSrc3Instruction : public PPCSrc2Instruction
+   {
+   TR::Register *_source3Register;
+
+   public:
+
+   PPCSrc3Instruction(TR::InstOpCode::Mnemonic op, TR::Node *n, TR::Register *s1reg,
+                      TR::Register *s2reg, TR::Register *s3reg, TR::CodeGenerator *cg)
+      : TR::PPCSrc2Instruction(op, n, s1reg, s2reg, cg), _source3Register(s3reg)
+      {
+      useRegister(s3reg);
+      }
+
+   PPCSrc3Instruction(TR::InstOpCode::Mnemonic op, TR::Node *n, TR::Register *s1reg,
+                      TR::Register *s2reg, TR::Register *s3reg,
+                      TR::Instruction *precedingInstruction, TR::CodeGenerator *cg)
+      : TR::PPCSrc2Instruction(op, n, s1reg, s2reg, precedingInstruction, cg), _source3Register(s3reg)
+      {
+      useRegister(s3reg);
+      }
+
+   virtual Kind getKind() { return IsSrc3; }
+
+   TR::Register *getSource3Register() { return _source3Register; }
+   TR::Register *setSource3Register(TR::Register *sr) { return (_source3Register = sr); }
+
+   virtual TR::Register *getSourceRegister(uint32_t i)
+      {
+      return i == 2 ? _source3Register : PPCSrc2Instruction::getSourceRegister(i);
+      }
+
+   virtual void fillBinaryEncodingFields(uint32_t *cursor);
+
+   virtual void assignRegisters(TR_RegisterKinds kindToBeAssigned);
+
+   virtual bool refsRegister(TR::Register *reg)
+      {
+      return reg == _source3Register || TR::PPCSrc2Instruction::refsRegister(reg);
+      }
+   virtual bool usesRegister(TR::Register *reg)
+      {
+      return reg == _source3Register || TR::PPCSrc2Instruction::usesRegister(reg);
+      }
+
+   virtual void registersGoLive(TR::CodeGenerator::TR_RegisterPressureState *state)
+      {
+      state->addVirtualRegister(getSource1Register());
+      state->addVirtualRegister(getSource2Register());
+      state->addVirtualRegister(getSource3Register());
+      }
+   virtual void registersGoDead(TR::CodeGenerator::TR_RegisterPressureState *state)
+      {
+      state->removeVirtualRegister(getSource1Register());
+      state->removeVirtualRegister(getSource2Register());
+      state->removeVirtualRegister(getSource3Register());
       }
    };
 
@@ -971,35 +948,6 @@ class PPCTrg1Src1ImmInstruction : public PPCTrg1Src1Instruction
    uint32_t setSourceImmediate(uint32_t si) {return (_source1Immediate = si);}
 
    uintptr_t getSourceImmPtr()             {return _source1Immediate;}
-
-   virtual void updateImmediateField(uint32_t imm)
-      {
-      _source1Immediate = imm;
-      insertImmediateField((uint32_t*)getBinaryEncoding());
-      }
-
-   void insertImmediateField(uint32_t *instruction)
-      {
-      if (!isVMX() && !isVSX())
-         *instruction |= _source1Immediate & 0xffff;
-      else
-	     *instruction |= (_source1Immediate & 0x3f) << 16;
-      }
-
-   void insertShiftAmount(uint32_t *instruction)
-      {
-      if (isDoubleWord() || getOpCodeValue() == TR::InstOpCode::extswsli)
-         // The low order 5 bits of a long shift amount are in the shift field.  The high order bit
-         // is in bit 30.
-         {
-         *instruction |= ((_source1Immediate & 0x1f) << TR::RealRegister::pos_SH) |
-                         ((_source1Immediate & 0x20) >> 4);
-         }
-      else
-         {
-         *instruction |= ((_source1Immediate & 0x1f) << TR::RealRegister::pos_SH);
-         }
-      }
 
    void addMetaDataForCodeAddress(uint8_t *cursor);
 
@@ -1391,16 +1339,6 @@ class PPCMemSrc1Instruction : public PPCMemInstruction
    virtual bool defsRealRegister(TR::Register *reg);
 
    virtual bool usesRegister(TR::Register *reg);
-
-   void insertSourceRegister(uint32_t *instruction)
-      {
-      TR::RealRegister *source = toRealRegister(_sourceRegister);
-
-      if (isVSX())
-         source->setRegisterFieldXS(instruction);
-      else
-         source->setRegisterFieldRS(instruction);
-      }
 
    virtual void registersGoLive(TR::CodeGenerator::TR_RegisterPressureState *state)
       {

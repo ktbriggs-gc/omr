@@ -73,6 +73,44 @@ TR::ARM64ImmInstruction *generateImmInstruction(
                    TR::Instruction *preced = NULL);
 
 /*
+ * @brief Generates relocatable imm instruction
+ * @param[in] cg : CodeGenerator
+ * @param[in] op : instruction opcode
+ * @param[in] node : node
+ * @param[in] imm : immediate value
+ * @param[in] relocationKind : relocation kind
+ * @param[in] preced : preceding instruction
+ * @return generated instruction
+ */
+TR::Instruction *generateRelocatableImmInstruction(
+                   TR::CodeGenerator *cg,
+                   TR::InstOpCode::Mnemonic op,
+                   TR::Node *node,
+                   uintptr_t imm,
+                   TR_ExternalRelocationTargetKind relocationKind,
+                   TR::Instruction *preced = NULL);
+
+/*
+ * @brief Generates relocatable imm instruction
+ * @param[in] cg : CodeGenerator
+ * @param[in] op : instruction opcode
+ * @param[in] node : node
+ * @param[in] imm : immediate value
+ * @param[in] relocationKind : relocation kind
+ * @param[in] sr : symbol reference
+ * @param[in] preced : preceding instruction
+ * @return generated instruction
+ */
+TR::Instruction *generateRelocatableImmInstruction(
+                   TR::CodeGenerator *cg,
+                   TR::InstOpCode::Mnemonic op,
+                   TR::Node *node,
+                   uintptr_t imm,
+                   TR_ExternalRelocationTargetKind relocationKind,
+                   TR::SymbolReference *sr,
+                   TR::Instruction *preced = NULL);
+
+/*
  * @brief Generates imm sym instruction
  * @param[in] cg : CodeGenerator
  * @param[in] op : instruction opcode
@@ -182,6 +220,26 @@ TR::Instruction *generateCompareBranchInstruction(
                    TR::Node *node,
                    TR::Register *sreg,
                    TR::LabelSymbol *sym,
+                   TR::Instruction *preced = NULL);
+
+/*
+ * @brief Generates compare and branch instruction
+ * @param[in] cg : CodeGenerator
+ * @param[in] op : instruction opcode
+ * @param[in] node : node
+ * @param[in] sreg : source register
+ * @param[in] sym : label symbol
+ * @param[in] cond : register dependency condition
+ * @param[in] preced : preceding instruction
+ * @return generated instruction
+ */
+TR::Instruction *generateCompareBranchInstruction(
+                   TR::CodeGenerator *cg,
+                   TR::InstOpCode::Mnemonic op,
+                   TR::Node *node,
+                   TR::Register *sreg,
+                   TR::LabelSymbol *sym,
+                   TR::RegisterDependencyConditions *cond,
                    TR::Instruction *preced = NULL);
 
 /*
@@ -605,6 +663,7 @@ TR::Instruction *generateSrc2Instruction(
  * @param[in] treg : target register
  * @param[in] sreg : source register
  * @param[in] shiftAmount : shift amount
+ * @param[in] is64bit : true when it is 64-bit operation
  * @param[in] preced : preceding instruction
  * @return generated instruction
  */
@@ -614,6 +673,7 @@ TR::Instruction *generateArithmeticShiftRightImmInstruction(
                    TR::Register *treg,
                    TR::Register *sreg,
                    uint32_t shiftAmount,
+                   bool is64bit = true,
                    TR::Instruction *preced = NULL);
 
 /*
@@ -623,6 +683,7 @@ TR::Instruction *generateArithmeticShiftRightImmInstruction(
  * @param[in] treg : target register
  * @param[in] sreg : source register
  * @param[in] shiftAmount : shift amount
+ * @param[in] is64bit : true when it is 64-bit operation
  * @param[in] preced : preceding instruction
  * @return generated instruction
  */
@@ -632,6 +693,7 @@ TR::Instruction *generateLogicalShiftRightImmInstruction(
                    TR::Register *treg,
                    TR::Register *sreg,
                    uint32_t shiftAmount,
+                   bool is64bit = true,
                    TR::Instruction *preced = NULL);
 
 /*
@@ -641,6 +703,7 @@ TR::Instruction *generateLogicalShiftRightImmInstruction(
  * @param[in] treg : target register
  * @param[in] sreg : source register
  * @param[in] shiftAmount : shift amount
+ * @param[in] is64bit : true when it is 64-bit operation
  * @param[in] preced : preceding instruction
  * @return generated instruction
  */
@@ -650,6 +713,7 @@ TR::Instruction *generateLogicalShiftLeftImmInstruction(
                    TR::Register *treg,
                    TR::Register *sreg,
                    uint32_t shiftAmount,
+                   bool is64bit = true,
                    TR::Instruction *preced = NULL);
 
 /*
