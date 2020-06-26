@@ -110,11 +110,15 @@ class HeapRegionStateTable;
 #define LOCALGC_ESTIMATE_FRAGMENTATION 		0x1
 #define GLOBALGC_ESTIMATE_FRAGMENTATION 	0x2
 
-#define EVACUATOR_DEFAULT_STACK_DEPTH			32
-#define EVACUATOR_DEFAULT_INSIDE_OBJECT_SIZE	256
+#define EVACUATOR_DEFAULT_STACK_DEPTH			16
+#define EVACUATOR_DEFAULT_INSIDE_OBJECT_SIZE	4096
 #define EVACUATOR_DEFAULT_INSIDE_COPY_DISTANCE	4096
-#define EVACUATOR_DEFAULT_WORK_QUANTUM EVACUATOR_DEFAULT_INSIDE_COPY_DISTANCE
-#define EVACUATOR_DEFAULT_WORK_QUANTA 2
+#define EVACUATOR_DEFAULT_WORK_QUANTUM			EVACUATOR_DEFAULT_INSIDE_COPY_DISTANCE
+#define EVACUATOR_DEFAULT_WORK_QUANTA			2
+#define EVACUATOR_DEFAULT_SCAN_OPTIONS			370
+#define EVACUATOR_DEFAULT_TRACE_OPTIONS			1
+
+#undef EVACUATOR_ALWAYS
 
 enum ExcessiveLevel {
 	excessive_gc_normal = 0,
@@ -1547,9 +1551,17 @@ public:
 		, scvTenureStrategyAdaptive(true)
 		, scvTenureStrategyLookback(true)
 		, scvTenureStrategyHistory(true)
+#if defined(EVACUATOR_ALWAYS)
+		, scavengerEnabled(true)
+#else
 		, scavengerEnabled(false)
+#endif /* defined(EVACUATOR_ALWAYS) */
 		, scavengerRsoScanUnsafe(false)
+#if defined(EVACUATOR_ALWAYS)
+		, evacuatorEnabled(true)
+#else
 		, evacuatorEnabled(false)
+#endif /* defined(EVACUATOR_ALWAYS) */
 		, cacheListSplit(0)
 #if defined(OMR_GC_CONCURRENT_SCAVENGER)
 		, softwareRangeCheckReadBarrier(false)
@@ -1567,8 +1579,8 @@ public:
 		, evacuatorMaximumInsideCopyDistance(EVACUATOR_DEFAULT_INSIDE_COPY_DISTANCE)
 		, evacuatorWorkQuantumSize(EVACUATOR_DEFAULT_WORK_QUANTUM)
 		, evacuatorWorkQuanta(EVACUATOR_DEFAULT_WORK_QUANTA)
-		, evacuatorScanOptions(0)
-		, evacuatorTraceOptions(0)
+		, evacuatorScanOptions(EVACUATOR_DEFAULT_SCAN_OPTIONS)
+		, evacuatorTraceOptions(EVACUATOR_DEFAULT_TRACE_OPTIONS)
 		, scavengerFailedTenureThreshold(0)
 		, maxScavengeBeforeGlobal(0)
 		, scvArraySplitMaximumAmount(DEFAULT_ARRAY_SPLIT_MAXIMUM_SIZE)

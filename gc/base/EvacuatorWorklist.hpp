@@ -98,7 +98,7 @@ public:
 	/**
 	 * Return the number of contained free elements
 	 */
-	uintptr_t getCount() { return _count; }
+	uintptr_t getCount() const { return _count; }
 
 	/**
 	 * Get the next available free workspace. This will assert if it fails.
@@ -142,13 +142,16 @@ public:
 	{
 		Debug_MM_true((0 == _count) == (NULL == _head));
 
-		MM_EvacuatorWorkspace *next = free->next;
-		free->next = _head;
-		free->base = NULL;
-		free->length = 0;
-		free->offset = 0;
-		_head = free;
-		_count += 1;
+		MM_EvacuatorWorkspace *next = NULL;
+		if (NULL != free) {
+			next = free->next;
+			free->next = _head;
+			free->base = NULL;
+			free->length = 0;
+			free->offset = 0;
+			_head = free;
+			_count += 1;
+		}
 
 		Debug_MM_true((0 == _count) == (NULL == _head));
 
@@ -242,15 +245,20 @@ class MM_EvacuatorWorklist : public MM_Base
 /*
  * Data members
  */
+public:
+	typedef struct List {
+		MM_EvacuatorWorkspace *head;	/* points to head of list */
+		MM_EvacuatorWorkspace *tail;	/* points to tail of list */
+	} List;
+
 private:
 	MM_EvacuatorBase *_evacuator;		/* abridged view of bound MM_Evacuator instance */
 	MM_EvacuatorFreelist *_freeList;	/* backing store for workspace allocation */
-	MM_EvacuatorWorkspace *_head;		/* points to head of worklist */
-	MM_EvacuatorWorkspace *_tail;		/* points to tail of worklist */
 	volatile uintptr_t _volume;			/* (bytes) volume of work contained in list */
+	List _default;						/* FIFO list of priority workspaces */
+	List _deferred;						/* FIFO list of deferred workspaces */
 
 protected:
-public:
 
 /*
  * Function members
@@ -265,73 +273,135 @@ public:
 
 	/**
 	 * Peek at the workspace at the head of the list, which may be NULL
-	 */
-	const MM_EvacuatorWorkspace *peek() const { return _head; }
-
-	/**
-	 * Append/prepend a workspace to the list.
 	 *
-	 * @param work the workspace to add
+	 * @param deferred if true drain deferred list before preferred list
+	 * @return pointer to const workspace at head of deferred or preferred list
 	 */
-	void
-	add(MM_EvacuatorWorkspace *work, bool push = false)
+	const MM_EvacuatorWorkspace *
+	peek(bool deferred) const
 	{
-		Debug_MM_true((0 == _volume) == (NULL == _head));
-		Debug_MM_true((NULL == _head) == (NULL == _tail));
-		Debug_MM_true((_head != _tail) || (NULL == _head) || (volume(_head) == _volume));
-		Debug_MM_true((NULL != work) && (NULL != work->base) && (0 < work->length));
+		assertWorklistInvariant();
 
-		VM_AtomicSupport::add(&_volume, volume(work));
-
-		/* append/prepend work to worklist */
-		work->next = NULL;
-		if (NULL == _head) {
-			_head = _tail = work;
-		} else if (push) {
-			work->next = _head;
-			_head = work;
-		} else if (_head == _tail) {
-			work->next = _head;
-			_head = work;
-		} else {
-			_tail->next = work;
-			_tail = _tail->next;
+		/* select a list in preference order */
+		const List *list = deferred ? &_deferred : &_default;
+		const MM_EvacuatorWorkspace *work = list->head;
+		if (NULL == work) {
+			list = deferred ? &_default : &_deferred;
+			work = list->head;
 		}
 
-		Debug_MM_true((0 == _volume) == (NULL == _head));
-		Debug_MM_true((NULL == _head) == (NULL == _tail));
-		Debug_MM_true((_head != _tail) || (NULL == _head) || (volume(_head) == _volume));
+		assertWorklistInvariant();
+		return work;
+	}
+
+	void
+	addWorkToList(List *list, MM_EvacuatorWorkspace *workspace) const
+	{
+		/* expect singleton workspace reject null or empty workspace */
+		Debug_MM_true((NULL != workspace) && (0 < workspace->length) && (NULL == workspace->next));
+		if (NULL != workspace) {
+			if (0 < workspace->length) {
+				if (NULL == list->head) {
+					list->head = list->tail = workspace;
+				} else if (list->head == list->tail) {
+					workspace->next = list->head;
+					list->head = workspace;
+				} else {
+					list->tail->next = workspace;
+					list->tail = list->tail->next;
+				}
+			} else {
+				_freeList->add(workspace);
+			}
+		}
+	}
+
+	/**
+	 * Append a single workspace to the default or deferred list.
+	 *
+	 * @param workspace the workspace to add
+	 * @param defer whether to add to deferred list (true) or preferred list (false, default)
+	 * @return false if not added (0 length or NULL)
+	 */
+	void
+	add(MM_EvacuatorWorkspace *workspace, bool defer = false)
+	{
+		/* expect singleton workspace reject null or empty workspace */
+		Debug_MM_true((NULL != workspace) && (0 < workspace->length) && (NULL == workspace->next));
+		assertWorklistInvariant();
+
+		if (NULL != workspace) {
+
+			/* append work to worklist */
+			workspace->next = NULL;
+			List *list = defer ? &_deferred : &_default;
+			addWorkToList(list, workspace);
+
+			VM_AtomicSupport::add(&_volume, volume(workspace));
+		}
+
+		assertWorklistInvariant();
+	}
+
+	/**
+	 * Append a list of workspaces to the list.
+	 *
+	 * @param work the workspace to add
+	 * @param defer whether to add to deferred list (true) or preferred list (false, default)
+	 */
+	void
+	add(List *workspaces, bool defer = false)
+	{
+		assertWorklistInvariant();
+
+		/* drain workspaces into worklist */
+		while (NULL != workspaces->head) {
+			MM_EvacuatorWorkspace *work = workspaces->head;
+			Debug_MM_true(0 < work->length);
+			workspaces->head = work->next;
+			work->next = NULL;
+			add(work, defer);
+		}
+		workspaces->tail = NULL;
+
+		assertWorklistInvariant();
 	}
 
 	/**
 	 * Pull the workspace from the head of the list.
 	 *
+	 * @param deferred if true drain deferred list before preferred list
 	 * @return the next workspace, or NULL
 	 */
 	MM_EvacuatorWorkspace *
-	next()
+	next(bool deferred)
 	{
-		Debug_MM_true((0 == _volume) == (NULL == _head));
-		Debug_MM_true((NULL == _head) == (NULL == _tail));
-		Debug_MM_true((_head != _tail) || (NULL == _head) || (volume(_head) == _volume));
+		assertWorklistInvariant();
 
-		MM_EvacuatorWorkspace *work = _head;
+		/* select a list in preference order */
+		List *list = deferred ? &_deferred : &_default;
+		MM_EvacuatorWorkspace *work = list->head;
+		if (NULL == work) {
+			list = deferred ? &_default : &_deferred;
+			work = list->head;
+		}
+
+		/* if a head workspace is available from selected list pull and return it */
 		if (NULL != work) {
-			Debug_MM_true((work != _tail) || (NULL == work->next));
-			Debug_MM_true((work == _tail) || (NULL != work->next));
+			Debug_MM_true((work != list->tail) || (NULL == work->next));
+			Debug_MM_true((work == list->tail) || (NULL != work->next));
 
 			VM_AtomicSupport::subtract(&_volume, volume(work));
-
-			_head = (work == _tail) ? (_tail = NULL) : work->next;
+			list->head = work->next;
+			if (NULL == list->head) {
+				list->tail = NULL;
+			}
 			work->next = NULL;
 
 			Debug_MM_true((NULL != work->base) && (0 < work->length));
 		}
 
-		Debug_MM_true((0 == _volume) == (NULL == _head));
-		Debug_MM_true((NULL == _head) == (NULL == _tail));
-		Debug_MM_true((_head != _tail) || (NULL == _head) || (volume(_head) == _volume));
-		Debug_MM_true((NULL == work) || ((NULL != work->base) && (0 < work->length)));
+		assertWorklistInvariant();
 		return work;
 	}
 
@@ -345,18 +415,20 @@ public:
 	void
 	flush()
 	{
-		Debug_MM_true((0 == _volume) == (NULL == _head));
-		Debug_MM_true((NULL == _head) == (NULL == _tail));
+		assertWorklistInvariant();
 
 		VM_AtomicSupport::set(&_volume, 0);
 		VM_AtomicSupport::readBarrier();
 
-		while (NULL != _head) {
-			_head = _freeList->flush(_head);
+		while (NULL != _default.head) {
+			_default.head = _freeList->flush(_default.head);
 		}
-		_tail = NULL;
+		while (NULL != _deferred.head) {
+			_deferred.head = _freeList->flush(_deferred.head);
+		}
+		_default.tail = _deferred.tail = NULL;
 
-		Debug_MM_true((0 == _volume) == (NULL == _head));
+		assertWorklistInvariant();
 	}
 
 	/**
@@ -364,37 +436,41 @@ public:
 	 *
 	 * @param[in] work pointer to workspace.
 	 */
-	uintptr_t volume(const MM_EvacuatorWorkspace *work)
+	uintptr_t volume(const MM_EvacuatorWorkspace *work) const
 	{
-		uintptr_t volume = 0;
-
+		/* volume is length in bytes */
 		if (NULL != work) {
-
-			/* volume is length in bytes */
-			volume = work->length;
-
-			/* for split array workspaces offset is >0 (start slot is array[offset-1]) */
-			if (0 < work->offset) {
-
-				/* the length the number of slots to scan */
-				volume *= _evacuator->getReferenceSlotSize();
-			}
+			return (0 == work->offset) ? work->length : (work->length * _evacuator->getReferenceSlotSize());
 		}
-
-		return volume;
+		return 0;
 	}
+
+
+	void
+	assertWorklistInvariant() const
+	{
+		Debug_MM_true((0 == _volume) == ((NULL == _default.head) && (NULL == _deferred.head)));
+		Debug_MM_true((NULL == _default.head) == (NULL == _default.tail));
+		Debug_MM_true((NULL == _default.head) || (NULL == _default.tail->next));
+		Debug_MM_true((NULL == _deferred.head) == (NULL == _deferred.tail));
+		Debug_MM_true((NULL == _deferred.head) || (NULL == _deferred.tail->next));
+	}
+
+	/* evacuator is effectively const but cannot be set in evacuator constructor */
+	void evacuator(MM_EvacuatorBase *evacuator) { _evacuator = evacuator; }
 
 	/**
 	 * Constructor
 	 */
-	MM_EvacuatorWorklist(MM_EvacuatorBase *evacuator, MM_EvacuatorFreelist *freeList)
+	MM_EvacuatorWorklist(MM_EvacuatorFreelist *freeList)
 		: MM_Base()
-		, _evacuator(evacuator)
+		, _evacuator(NULL)
 		, _freeList(freeList)
-		, _head(NULL)
-		, _tail(NULL)
 		, _volume(0)
-	{ }
+	{
+		_default.head = _default.tail = NULL;
+		_deferred.head = _deferred.tail = NULL;
+	}
 };
 
 #endif /* EVACUATORWORKLIST_HPP_ */

@@ -45,9 +45,7 @@ private:
 	uint8_t *_scan;								/* scan head points to object being scanned */
 	uintptr_t _startSlot;						/* (split array) 0-based array index of first slot to scan */
 	uintptr_t _stopSlot;						/* (split array) 0-based array index of slot after the last slot to scan */
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 	uintptr_t _activations;						/* number of times this scanspace has been activated (pushed into) */
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
 protected:
 	/* enumeration of flag bits may be extended past scanEndFlag by subclasses */
@@ -75,19 +73,14 @@ public:
 	 * @return a pointer to instantiated array
 	 */
 	static MM_EvacuatorScanspace *
-	newInstanceArray(MM_EvacuatorBase *evacuator, MM_Forge *forge, uintptr_t count)
+	newInstanceArray(MM_Forge *forge, uintptr_t count)
 	{
 		MM_EvacuatorScanspace *scanspace = (MM_EvacuatorScanspace *)forge->allocate(sizeof(MM_EvacuatorScanspace) * count, OMR::GC::AllocationCategory::FIXED, OMR_GET_CALLSITE());
-
 		if (NULL != scanspace) {
-			for (uintptr_t i = 0; i < count; i += 1) {
-				MM_EvacuatorScanspace *space = new(scanspace + i) MM_EvacuatorScanspace(evacuator);
-				if (NULL == space) {
-					return NULL;
-				}
+			for (intptr_t index = count - 1; 0 <= index; index -= 1) {
+				new(&scanspace[index]) MM_EvacuatorScanspace();
 			}
 		}
-
 		return scanspace;
 	}
 
@@ -112,7 +105,7 @@ public:
 	/**
 	 * Get the remembered state of the most recently scanned object
 	 */
-	bool getRememberedState() { return isRememberedFlag == (_flags & (uintptr_t)isRememberedFlag); }
+	bool getRememberedState() const { return isRememberedFlag == (_flags & (uintptr_t)isRememberedFlag); }
 
 	/**
 	 * Set the remembered state of the current object if it is tenured and has a referent in new space
@@ -128,72 +121,100 @@ public:
 	}
 
 	/**
-	 * Load whitespace or unscanned work to scan into this scanspace. If there is work it
-	 * may be followed by additional whitespace. In either case the copy limit will be set at the next
-	 * page boundary or truncated at the copy head.
-	 *
-	 * @param base points to start of unscanned work
-	 * @param copy points to whitespace at copy head
-	 * @param length extent in bytes of unscanned work at base
-	 * @param isLOA true if space is in large object area (LOA)
+	 * Reset to an empty state after popping or rebasing to release unscanned work. Scanspace
+	 * must be empty of work.
 	 */
 	void
-	setScanspace(uint8_t *base, uint8_t *copy, uintptr_t length, bool isLOA = false)
+	reset()
 	{
-		Debug_MM_true(0 == getWorkSize());
+		/* adjust base to scan head to clear work scanned since frame was activated */
+		_base = _scan;
+		assertScanspaceInvariant();
 
-		setCopyspace(base, copy, length, isLOA);
+		/* advance base to scan head */
+		if (0 == getWhiteSize()) {
+			/* reset scanspace bounds to empty */
+			_scan = rebase();
+		} else {
+			_base = _scan;
+		}
 
-		_scan = _base;
-		_startSlot = 0;
-		_stopSlot = 0;
+		/* reset array-specific flag and fields and clear active object scanner */
+		_flags &= ~(uintptr_t)isSplitArrayFlag;
+		_startSlot = _stopSlot = 0;
 		_objectScanner = NULL;
 
-		clearRememberedState();
+		assertScanspaceInvariant();
+	}
+
+	void
+	setScanspace(MM_EvacuatorBase::Region region, uint8_t *base, uint8_t *copy, uintptr_t length, bool isLOA = false)
+	{
+		Debug_MM_true(isEmpty());
+
+		MM_EvacuatorCopyspace::reset(region, base);
+		MM_EvacuatorCopyspace::setCopyspace(region, base, copy, length, isLOA);
+		_scan = _base;
 
 		assertScanspaceInvariant();
 	}
 
 	/**
-	 * Load a split array segment into this scanspace.
+	 * Load a split array segment into this scanspace. This will set the base and end points to the
+	 * complete array bounds and the scan and copy heads to the end point so split array scanspaces
+	 * always appear to be empty; isEmpty() is always true, getWorkSize(), getCopySize(),
+	 * getWhiteSize() will always return 0.
 	 *
 	 * @param base points to indexable object containing the segment
 	 * @param end points after end of contiguous indexable object containing the segment
 	 * @param start 1-based array index of first element in the segment
 	 * @param stop 1-based array index of element after the last element segment
-	 * @param volume the number of bytes contined in the array segment to be scanned
 	 */
 	void
-	setSplitArrayScanspace(uint8_t *base, uint8_t *end, uintptr_t start, uintptr_t stop)
+	setSplitArrayScanspace(MM_EvacuatorBase::Region region, uint8_t *array, uint8_t *end, uintptr_t start, uintptr_t stop)
 	{
-		Debug_MM_true(0 == getWorkSize());
+		Debug_MM_true(isEmpty());
 
-		setCopyspace(base, end, (uintptr_t)(end - base));
-		_scan = _end;
+		MM_EvacuatorCopyspace::reset(region, array);
+		MM_EvacuatorCopyspace::setCopyspace(region, array, end, (uintptr_t)(end - array));
+		_flags |= isSplitArrayFlag;
 		_startSlot = start;
 		_stopSlot = stop;
-		_flags |= isSplitArrayFlag;
+		_scan = _end;
 
-		clearRememberedState();
-
-		Debug_MM_true((NULL != _objectScanner) && _objectScanner->isIndexableObject());
+		Debug_MM_true((NULL != getActiveObject()) && _objectScanner->isIndexableObject());
 		assertScanspaceInvariant();
 	}
 
 	/**
 	 * Test whether scanspace contains a split array segment
 	 */
-	bool isSplitArrayScanspace() { return isSplitArrayFlag == (_flags & (uintptr_t)isSplitArrayFlag); }
+	bool isSplitArrayScanspace() const { return isSplitArrayFlag == (_flags & (uintptr_t)isSplitArrayFlag); }
 
 	/**
 	 * Return the scanned volume of the split array segment (or 0 if not a split array scanscpace).
 	 */
-	uintptr_t getSplitArrayScanVolume() { return ((_stopSlot - _startSlot) * _evacuator->getReferenceSlotSize()); }
+	uintptr_t getSplitArrayScanVolume() const { return ((_stopSlot - _startSlot) * _evacuator->getReferenceSlotSize()); }
+
+	/**
+	 * Return the start slot offset of the split array segment (or 0 if not a split array scanscpace).
+	 */
+	uintptr_t getSplitArrayStartOffset() const { return _startSlot; }
+
+	/**
+	 * Return the end slot offset of the split array segment (or 0 if not a split array scanscpace).
+	 */
+	uintptr_t getSplitArrayStopOffset() const { return _stopSlot; }
+
+	/**
+	 * Return true if scanspace holds no unscanned work and no whitespace .
+	 */
+	bool isEmpty() const { return (_scan == _copy) && (_copy == _end); }
 
 	/**
 	 * Return the number of bytes remaining to be scanned (this will always be 0 for active split array scanspaces).
 	 */
-	uintptr_t getWorkSize() { return isSplitArrayScanspace() ? getSplitArrayScanVolume() : (_copy - _scan); }
+	uintptr_t getWorkSize() const { return isSplitArrayScanspace() ? getSplitArrayScanVolume() : (_copy - _scan); }
 
 	/**
 	 * Return pointer to active object scanner, or NULL if object scanner not instantiated.
@@ -218,7 +239,7 @@ public:
 	/**
 	 * Return the position of the scan head
 	 */
-	uint8_t *getScanHead() { return _scan; }
+	uint8_t *getScanHead() const { return _scan; }
 
 	/**
 	 * Advance the scan pointer to next unscanned object and drop active object scanner.
@@ -246,6 +267,38 @@ public:
 		assertScanspaceInvariant();
 	}
 
+	omrobjectptr_t
+	cutWork(uintptr_t *length, uintptr_t *offset)
+	{
+		assertScanspaceInvariant();
+		omrobjectptr_t work = NULL;
+
+		/* only cut inactive frames */
+		if (0 == _activations) {
+
+			/* cut unscanned work between scan and copy head into workspace */
+			if (isSplitArrayScanspace()) {
+				work = (omrobjectptr_t)getBase();
+				*length = getSplitArrayStopOffset() - getSplitArrayStartOffset();
+				*offset = getSplitArrayStartOffset() + 1;
+			} else {
+				Debug_MM_true(_base == _scan);
+				Debug_MM_true(0 < getWorkSize());
+				Debug_MM_true(NULL == _objectScanner);
+				work = (omrobjectptr_t)getBase();
+				*length = getWorkSize();
+				*offset = 0;
+			}
+
+			/* clear cut work from scanspace */
+			_scan = _copy;
+			reset();
+		}
+
+		assertScanspaceInvariant();
+		return work;
+	}
+
 	/**
 	 * Pull work and remaining whitespace from a scanspace from point of last copy.
 	 *
@@ -267,7 +320,7 @@ public:
 		}
 
 		/* pull work and whitespace from copyspace into this scanspace and rebase copyspace to copy head */
-		setScanspace(base, fromspace->_copy, fromspace->_end - base, fromspace->isLOA());
+		setScanspace(fromspace->getEvacuationRegion(), base, fromspace->_copy, fromspace->_end - base, fromspace->isLOA());
 
 		/* truncate fromspace at point of last copy */
 		fromspace->_copy = fromspace->_end = base;
@@ -288,11 +341,11 @@ public:
 	void
 	pullWhitespace(MM_EvacuatorScanspace *fromspace)
 	{
-		fromspace->assertScanspaceInvariant();
-		assertScanspaceInvariant();
 		Debug_MM_true(isEmpty() || (this == fromspace));
 		Debug_MM_true(!fromspace->isSplitArrayScanspace());
 		Debug_MM_true(!isSplitArrayScanspace());
+		fromspace->assertScanspaceInvariant();
+		assertScanspaceInvariant();
 
 		/* idempotent */
 		if (this == fromspace) {
@@ -300,10 +353,11 @@ public:
 		}
 
 		/* pull whitespace at end of fromspace into this scanspace */
-		setScanspace(fromspace->_copy, fromspace->_copy, fromspace->getWhiteSize(), fromspace->isLOA());
+		setScanspace(fromspace->getEvacuationRegion(), fromspace->_copy, fromspace->_copy, fromspace->getWhiteSize(), fromspace->isLOA());
 
 		/* trim tail of fromspace and leave base, scan head and flags as they are */
 		fromspace->_end = fromspace->_copy;
+
 		fromspace->assertScanspaceInvariant();
 		assertScanspaceInvariant();
 	}
@@ -316,8 +370,8 @@ public:
 	void
 	pullWork(MM_EvacuatorCopyspace *fromspace)
 	{
-		fromspace->assertCopyspaceInvariant();
 		assertScanspaceInvariant();
+		fromspace->assertCopyspaceInvariant();
 		Debug_MM_true(isEmpty() || (this == fromspace));
 		Debug_MM_true(!isSplitArrayScanspace());
 
@@ -328,8 +382,8 @@ public:
 
 		/* pull work from copyspace into this scanspace and rebase copyspace to copy head */
 		uintptr_t length = 0;
-		uint8_t * workspace = fromspace->rebase(&length);
-		setScanspace((uint8_t *)workspace, workspace + length, length, fromspace->isLOA());
+		uint8_t *workspace = fromspace->rebase(&length);
+		setScanspace(fromspace->getEvacuationRegion(), workspace, workspace + length, length, fromspace->isLOA());
 
 		/* reset remembered state and passivate active scanner */
 		clearRememberedState();
@@ -339,35 +393,9 @@ public:
 	}
 
 	/**
-	 * Reset the base to scan head to clear scanned work.
-	 *
-	 * @param initialize set to true to reset scanscape to original state
+	 * Reset the base to scan head to clear scanned work, retaining region containment.
 	 */
-	void
-	reset(bool initialize)
-	{
-		assertScanspaceInvariant();
-		/* rebase scanspace (base = scan) and clear all flags */
-		_base = _scan;
-		_flags &= ~isSplitArrayFlag;
-
-		/* reset scanspace and clear active object scanner */
-		_startSlot = _stopSlot = 0;
-		_objectScanner = NULL;
-
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-		Debug_MM_true(0 == getWorkSize());
-		if (initialize) {
-			_activations = 0;
-		}
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
-		assertScanspaceInvariant();
-	}
-
-	bool isEmpty() { return (_scan == _copy) && (_copy == _end); }
-
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-	/**
+		/**
 	 * Bump activation count
 	 */
 	void activated() { _activations += 1; }
@@ -375,29 +403,34 @@ public:
 	/**
 	 * Return the number of times this scanspace has been activated (pushed into)
 	 */
-	uintptr_t getActivationCount() { return _activations; }
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+	uintptr_t getActivationCount() const { return _activations; }
+
+	/**
+	 * Reset scanspace activation count.
+	 */
+	void clearActivationCount() { _activations = 0; }
 
 	void
-	assertScanspaceInvariant()
+	assertScanspaceInvariant() const
 	{
-		assertCopyspaceInvariant();
+		MM_EvacuatorCopyspace::assertCopyspaceInvariant();
+		Debug_MM_true(0 == (_flags & ~(((uintptr_t)scanEndFlag << 1) - 1)));
 		Debug_MM_true(_base <= _scan);
 		Debug_MM_true(_scan <= _copy);
 	}
 
 	/**
 	 * Constructor
+	 *
+	 * @param evacuator pointer to owning evacuator instance, which may not be fully instatiated.
 	 */
-	MM_EvacuatorScanspace(MM_EvacuatorBase *evacuator)
-		: MM_EvacuatorCopyspace(evacuator)
+	MM_EvacuatorScanspace()
+		: MM_EvacuatorCopyspace()
 		, _objectScanner(NULL)
 		, _scan(NULL)
 		, _startSlot (0)
 		, _stopSlot(0)
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 		, _activations(0)
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 	{ }
 };
 

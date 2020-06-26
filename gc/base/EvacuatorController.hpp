@@ -83,11 +83,9 @@ private:
 	uintptr_t _copiedBytesReportingDelta;				/* delta copied/scanned byte count per evacuator for triggering evacuator progress report to controller */
 	uintptr_t _bytesPerReportingEpoch;					/* number of bytes copied per reporting epoch */
 
-	uint8_t *_heapLayout[3][2];							/* lower and upper address bounds per heap region */
 	MM_MemorySubSpace *_memorySubspace[3];				/* pointer to memory subspace per heap region */
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-	uintptr_t * const _stackActivations;				/* array of summary aggregate stack frame activation counts as reported per gc */
 	MM_EvacuatorHistory _history;						/* epochal record per gc cycle */
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
@@ -98,12 +96,12 @@ protected:
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
 	const uintptr_t _objectAlignmentInBytes;			/* cached object alignment from GC_ObjectModelBase */
-	volatile uintptr_t _copiedBytes[2];					/* running total aggregate volume of copy accumulated in current gc cycle */
-	volatile uintptr_t _scannedBytes;					/* running total aggregate volume of copy scanned in current gc cycle */
+	volatile uintptr_t _aggregateVolumeMetrics[MM_Evacuator::metrics];/* running total aggregate volume of copy accumulated in current gc cycle */
 	volatile uintptr_t _finalDiscardedBytes;			/* sum of final whitespace bytes discarded during gc cycle for all evacuators */
 	volatile uintptr_t _finalFlushedBytes;				/* sum of final whitespace bytes flushed at end of gc cycle for all evacuators */
 	volatile uintptr_t _finalRecycledBytes;				/* sum of final whitespace bytes recycled at end of gc cycle for all evacuators */
 	uintptr_t _finalEvacuatedBytes;						/* total number of bytes evacuated to survivor/tenure regions during gc cycle */
+	uintptr_t _modalSurvivorVolumeMetric;				/* back-weighted running average of agggreagte survivor bytes copied last generation */
 
 	/* fields pulled down from MM_Scavenger ... the memory subspace pointers and nursery semispace bounds are cached above */
 	MM_GCExtensionsBase * const _extensions;			/* points to GC extensions */
@@ -127,6 +125,9 @@ public:
 		, aborting = min_evacuator_private_flag << 3	/* an evacuator has failed and gc cycle is aborting */
 	};
 
+	/* lower and upper address bounds per heap region */
+	uint8_t *_heapLayout[3][2];
+
 	/* hard lower and upper bounds for whitespace allocation are bound to tlh size */
 	const uintptr_t _maximumCopyspaceSize;
 	const uintptr_t _minimumCopyspaceSize;
@@ -145,19 +146,19 @@ public:
  */
 private:
 	/* calculate a rough overestimate of the amount of matter that will be evacuated to survivor or tenure in current cycle */
-	MMINLINE uintptr_t  calculateProjectedEvacuationBytes();
+	MMINLINE uintptr_t  calculateProjectedEvacuationBytes() const;
 
 	/* update evacuation history at end of a reporting epoch */
-	MMINLINE void reportProgress(MM_Evacuator *worker, uintptr_t oldScannedValue, uintptr_t newScannedValue, uintptr_t *sampledCopiedBytes);
+	MMINLINE void reportProgress(MM_Evacuator *worker, uintptr_t baseScannedMetric, uintptr_t *sampledVolumeMetrics);
 
 	/* calculate whitespace allocation size considering evacuator's production scaling factor */
 	MMINLINE uintptr_t calculateOptimalWhitespaceSize(MM_Evacuator::Region region);
 
 	/* calculate the number of active words in the evacuator bitmaps */
-	MMINLINE uintptr_t countEvacuatorBitmapWords(uintptr_t *tailMask, uintptr_t evacuatorCount);
+	MMINLINE uintptr_t countEvacuatorBitmapWords(uintptr_t *tailMask, uintptr_t evacuatorCount) const;
 
 	/* calculate the number of active words in the evacuator bitmaps */
-	MMINLINE uintptr_t countEvacuatorBitmapWords(uintptr_t *tailMask);
+	MMINLINE uintptr_t countEvacuatorBitmapWords(uintptr_t *tailMask) const;
 
 	/* fill evacuator bitmap with all 1s (reliable only when caller holds controller mutex) */
 	MMINLINE void fillEvacuatorBitmap(volatile uintptr_t * const bitmap, uintptr_t evacuatorCount);
@@ -166,10 +167,10 @@ private:
 	MMINLINE void fillEvacuatorBitmap(volatile uintptr_t * const bitmap);
 
 	/* test evacuator bitmap for all 0s (reliable only when caller holds controller mutex) */
-	MMINLINE bool isEvacuatorBitmapEmpty(volatile uintptr_t * const bitmap);
+	MMINLINE bool isEvacuatorBitmapEmpty(volatile uintptr_t * const bitmap) const;
 
 	/* test evacuator bitmap for all 1s (reliable only when caller holds controller mutex) */
-	MMINLINE bool isEvacuatorBitmapFull(volatile uintptr_t * const bitmap);
+	MMINLINE bool isEvacuatorBitmapFull(volatile uintptr_t * const bitmap) const;
 
 	/* set evacuator bit in evacuator bitmap */
 	MMINLINE uintptr_t setEvacuatorBit(uintptr_t evacuatorIndex, volatile uintptr_t * const bitmap);
@@ -179,7 +180,7 @@ private:
 
 	/* get bit mask for evacuator bit as aligned in evacuator bitmap */
 	uintptr_t
-	getEvacuatorBitMask(uintptr_t evacuatorIndex)
+	getEvacuatorBitMask(uintptr_t evacuatorIndex) const
 	{
 		Debug_MM_true(evacuatorIndex < _evacuatorCount);
 		return (uintptr_t)1 << (evacuatorIndex & index_to_map_word_modulus);
@@ -187,7 +188,7 @@ private:
 
 	/* calculate word/bit coordinates for worker index */
 	uintptr_t
-	mapEvacuatorIndexToMapAndMask(uintptr_t evacuatorIndex, uintptr_t *evacuatorBitmask)
+	mapEvacuatorIndexToMapAndMask(uintptr_t evacuatorIndex, uintptr_t *evacuatorBitmask) const
 	{
 		Debug_MM_true(evacuatorIndex < _evacuatorCount);
 		*evacuatorBitmask = getEvacuatorBitMask(evacuatorIndex);
@@ -196,7 +197,7 @@ private:
 
 	/* set evacuator bit in evacuator bitmap */
 	bool
-	testEvacuatorBit(uintptr_t evacuatorIndex, volatile uintptr_t * const bitmap)
+	testEvacuatorBit(uintptr_t evacuatorIndex, volatile uintptr_t * const bitmap) const
 	{
 		Debug_MM_true(evacuatorIndex < _evacuatorCount);
 		uintptr_t evacuatorMask = 0;
@@ -235,7 +236,7 @@ public:
 	 *
 	 * @return a pointer to the memory subspace
 	 */
-	MM_MemorySubSpace *getMemorySubspace(MM_Evacuator::Region region) { return _memorySubspace[region]; }
+	MM_MemorySubSpace *getMemorySubspace(MM_Evacuator::Region region) const { return _memorySubspace[region]; }
 
 	/**
 	 * Test for object alignment
@@ -243,7 +244,7 @@ public:
 	 * @param pointer pointer to test
 	 * @return true if pointer is object aligned
 	 */
-	bool isObjectAligned(void *pointer) { return 0 == ((uintptr_t)pointer & (_objectAlignmentInBytes - 1)); }
+	bool isObjectAligned(void *pointer) const { return 0 == ((uintptr_t)pointer & (_objectAlignmentInBytes - 1)); }
 
 	/**
 	 * Adjust to object size
@@ -251,7 +252,7 @@ public:
 	 * @param size to be adjusted
 	 * @return adjusted size
 	 */
-	uintptr_t alignToObjectSize(uintptr_t size) { return _extensions->objectModel.adjustSizeInBytes(size); }
+	uintptr_t alignToObjectSize(uintptr_t size) const { return _extensions->objectModel.adjustSizeInBytes(size); }
 
 	/**
 	 * Controller delegates backout and remembered set to subclass
@@ -285,26 +286,26 @@ public:
 	 *
 	 * The flags are all cleared at the start of each gc cycle.
 	 */
-	bool isEvacuatorFlagSet(uintptr_t flag) { return (flag == (_evacuatorFlags & flag)); }
-	bool isAnyEvacuatorFlagSet(uintptr_t flags) { return (0 != (_evacuatorFlags & flags)); }
-	bool areAllEvacuatorFlagsSet(uintptr_t flags) { return (flags == (_evacuatorFlags & flags)); }
+	bool isEvacuatorFlagSet(uintptr_t flag) const { return (flag == (_evacuatorFlags & flag)); }
+	bool isAnyEvacuatorFlagSet(uintptr_t flags) const { return (0 != (_evacuatorFlags & flags)); }
+	bool areAllEvacuatorFlagsSet(uintptr_t flags) const { return (flags == (_evacuatorFlags & flags)); }
 	void resetEvacuatorFlags() { VM_AtomicSupport::set(&_evacuatorFlags, 0); }
 
 	/**
 	 * Get the number of GC threads dispatched for current gc cycle
 	 */
-	uintptr_t getEvacuatorThreadCount() { return _evacuatorCount; }
+	uintptr_t getEvacuatorThreadCount() const { return _evacuatorCount; }
 
 	/* these methods return accurate results only when caller holds the controller or evacuator mutex */
-	bool isBoundEvacuator(uintptr_t evacuatorIndex) { return testEvacuatorBit(evacuatorIndex, _boundEvacuatorBitmap); }
-	bool isStalledEvacuator(uintptr_t evacuatorIndex) { return isBoundEvacuator(evacuatorIndex) && testEvacuatorBit(evacuatorIndex, _stalledEvacuatorBitmap); }
-	bool areAnyEvacuatorsStalled() { return (0 < _stalledEvacuatorCount); }
+	bool isBoundEvacuator(uintptr_t evacuatorIndex) const { return testEvacuatorBit(evacuatorIndex, _boundEvacuatorBitmap); }
+	bool isStalledEvacuator(uintptr_t evacuatorIndex) const { return isBoundEvacuator(evacuatorIndex) && testEvacuatorBit(evacuatorIndex, _stalledEvacuatorBitmap); }
+	bool areAnyEvacuatorsStalled() const { return (0 < _stalledEvacuatorCount); }
 
 	/**
 	 * Get the nearest neighboring bound evacuator, or wrap around and return identity if no other evacuators are bound
 	 */
 	MM_Evacuator *
-	getNextEvacuator(MM_Evacuator *evacuator)
+	getNextEvacuator(MM_Evacuator *evacuator) const
 	{
 		/* skip evacuator to start enumeration */
 		uintptr_t nextIndex = evacuator->getWorkerIndex();
@@ -405,14 +406,14 @@ public:
 	 *
 	 * @return true if all material evacuated has been scanned (end of successful scan cycle)
 	 */
-	bool hasCompletedScan() { return ((_copiedBytes[MM_Evacuator::survivor] + _copiedBytes[MM_Evacuator::tenure]) == _scannedBytes); }
+	bool hasCompletedScan() const { return ((_aggregateVolumeMetrics[MM_Evacuator::survivor] + _aggregateVolumeMetrics[MM_Evacuator::tenure]) == _aggregateVolumeMetrics[MM_Evacuator::scanned]); }
 
 	/**
 	 * Get global abort flag value. This is set if any evacuator raises an abort condition
 	 *
 	 * @return true if the evacuation has been aborted
 	 */
-	bool isAborting() { return isEvacuatorFlagSet(aborting); }
+	bool isAborting() const { return isEvacuatorFlagSet(aborting); }
 
 	/**
 	 * Atomically test and set global abort flag to true. This is set if any evacuator raises an abort condition.
@@ -448,10 +449,11 @@ public:
 	 * evacuator threads.
 	 *
 	 * @param worker the reporting evacuator
-	 * @param copied pointer to evacuator copied byte counter, which will be reset to 0
-	 * @param scanned pointer to evacuator scanned byte counter, which will be reset to 0
+	 * @param baseVolumeMetrics evacuator volume metrics as of last report, which will be reset to 0
+	 * @param currentVolumeMetrics evacuator volume metrics as of now
+	 * @return 0
 	 */
-	void reportProgress(MM_Evacuator *worker, uintptr_t *copied, uintptr_t *scanned);
+	uintptr_t reportProgress(MM_Evacuator *worker,  uintptr_t *baseVolumeMetrics, uintptr_t *currentVolumeMetrics);
 
 	/* allocate and NULL-fill evacuator pointer array (evacuators are instantiated at gc start as required) */
 	static MM_Evacuator**
@@ -512,15 +514,14 @@ public:
 		, _copiedBytesReportingDelta(0)
 		, _bytesPerReportingEpoch(0)
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-		, _stackActivations(allocateStackActivationArray(env, OMR_MAX((uintptr_t)MM_Evacuator::unreachable, env->getExtensions()->evacuatorMaximumStackDepth)))
 		, _collectorStartTime(0)
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 		, _objectAlignmentInBytes(env->getObjectAlignmentInBytes())
-		, _scannedBytes(0)
 		, _finalDiscardedBytes(0)
 		, _finalFlushedBytes(0)
 		, _finalRecycledBytes(0)
 		, _finalEvacuatedBytes(0)
+		, _modalSurvivorVolumeMetric(0)
 		, _extensions(env->getExtensions())
 		, _dispatcher((MM_ParallelDispatcher *)_extensions->dispatcher)
 		, _tenureMask(0)
@@ -540,8 +541,9 @@ public:
 		, _omrVM(env->getOmrVM())
 	{
 		_typeId = __FUNCTION__;
-		_copiedBytes[MM_Evacuator::survivor] = 0;
-		_copiedBytes[MM_Evacuator::tenure] = 0;
+		for (intptr_t metric = MM_Evacuator::survivor_copy; metric < MM_Evacuator::metrics; metric += 1) {
+			_aggregateVolumeMetrics[metric] = 0;
+		}
 	}
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
@@ -555,21 +557,6 @@ public:
 	void continueAfterSynchronizing(MM_Evacuator *worker, uint64_t startTime, uint64_t endTime, const char *id);
 	const MM_EvacuatorHistory::Epoch *getEpoch() { return _history.getEpoch(); }
 	uintptr_t sumStackActivations(uintptr_t *stackActivations, uintptr_t maxFrame);
-	static uintptr_t *
-	allocateStackActivationArray(MM_EnvironmentBase *env, uintptr_t maxFrame)
-	{
-		uintptr_t *stackActivationArray = NULL;
-
-		if (env->getExtensions()->isEvacuatorEnabled()) {
-			stackActivationArray = (uintptr_t *)env->getForge()->allocate(sizeof(uintptr_t) * maxFrame, OMR::GC::AllocationCategory::FIXED, OMR_GET_CALLSITE());
-			Debug_MM_true(NULL != stackActivationArray);
-			for (uintptr_t i = 0; i < maxFrame; i += 1) {
-				stackActivationArray[i] = 0;
-			}
-		}
-
-		return stackActivationArray;
-	}
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 };
 
