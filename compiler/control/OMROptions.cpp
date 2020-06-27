@@ -1176,7 +1176,6 @@ TR::OptionTable OMR::Options::_jitOptions[] = {
    {"traceNonLinearRA",                 "L\ttrace non-linear RA",                          SET_OPTION_BIT(TR_TraceNonLinearRegisterAssigner), "F"},
    {"traceOpts",                        "L\tdump each optimization name",                 SET_OPTION_BIT(TR_TraceOpts), "P" },
    {"traceOpts=",                       "L{regex}\tlist of optimizations to trace", TR::Options::setRegex, offsetof(OMR::Options, _optsToTrace), 0, "P"},
-   {"traceOptTrees",                    "L\tdump trees after each optimization",           SET_OPTION_BIT(TR_TraceOptTrees), "P" },
    {"traceOSR",                         "L\ttrace OSR",                                    SET_OPTION_BIT(TR_TraceOSR), "P"},
    {"traceOSRDefAnalysis",              "L\ttrace OSR reaching defintions analysis",       TR::Options::traceOptimization, osrDefAnalysis, 0, "P"},
 #ifdef J9_PROJECT_SPECIFIC
@@ -1184,7 +1183,6 @@ TR::OptionTable OMR::Options::_jitOptions[] = {
    {"traceOSRGuardRemoval",             "L\ttrace HCR guard removal",                      TR::Options::traceOptimization, osrGuardRemoval, 0, "P"},
 #endif
    {"traceOSRLiveRangeAnalysis",        "L\ttrace OSR live range analysis",                TR::Options::traceOptimization, osrLiveRangeAnalysis, 0, "P"},
-   {"tracePartialInlining",             "L\ttrace partial inlining heuristics",            SET_OPTION_BIT(TR_TracePartialInlining), "P" },
    {"tracePRE",                         "L\ttrace partial redundancy elimination",        TR::Options::traceOptimization, partialRedundancyElimination, 0, "P"},
    {"tracePrefetchInsertion",           "L\ttrace prefetch insertion",                     TR::Options::traceOptimization, prefetchInsertion, 0, "P"},
    {"tracePREForSubNodeReplacement",    "L\ttrace partial redundancy elimination focussed on optimal subnode replacement", SET_OPTION_BIT(TR_TracePREForOptimalSubNodeReplacement), "P" },
@@ -1208,8 +1206,7 @@ TR::OptionTable OMR::Options::_jitOptions[] = {
    {"traceRematerialization",           "L\ttrace rematerialization",                      TR::Options::traceOptimization, rematerialization, 0, "P"},
    {"traceReorderArrayIndexExpr",       "L\ttrace reorder array index expressions",        TR::Options::traceOptimization, reorderArrayIndexExpr, 0, "P"},
    {"traceSamplingJProfiling",          "L\ttrace samplingjProfiling",                     TR::Options::traceOptimization, samplingJProfiling, 0, "P"},
-   {"traceScalarizeSSOps",              "L\ttrace scalarization of array/SS ops", SET_OPTION_BIT(TR_TraceScalarizeSSOps), "P"},
-   {"traceSEL",                         "L\ttrace sign extension load", SET_OPTION_BIT(TR_TraceSEL), "P"},
+   {"traceSEL",                         "L\ttrace sign extension load",                    TR::Options::traceOptimization, signExtendLoads, 0, "P"},
    {"traceSequenceSimplification",      "L\ttrace arithmetic sequence simplification",     TR::Options::traceOptimization, expressionsSimplification, 0, "P"},
    {"traceStaticFinalFieldFolding",     "L\ttrace generic static final field folding",             TR::Options::traceOptimization, staticFinalFieldFolding, 0, "P"},
    {"traceStringBuilderTransformer",    "L\ttrace StringBuilder tranfsofermer optimization", TR::Options::traceOptimization, stringBuilderTransformer, 0, "P"},
@@ -1217,18 +1214,13 @@ TR::OptionTable OMR::Options::_jitOptions[] = {
    {"traceStripMining",                 "L\ttrace strip mining",                           TR::Options::traceOptimization, stripMining, 0, "P"},
    {"traceStructuralAnalysis",          "L\ttrace structural analysis", SET_OPTION_BIT(TR_TraceSA), "P"},
    {"traceSwitchAnalyzer",              "L\ttrace switch analyzer",                        TR::Options::traceOptimization, switchAnalyzer, 0, "P"},
-   {"traceTempUsage",                   "L\ttrace number of temps used",                   SET_OPTION_BIT(TR_TraceTempUsage), "P"},
-   {"traceTempUsageMore",               "L\ttrace usage of temps, showing each temp used", SET_OPTION_BIT(TR_TraceTempUsageMore), "P"},
    {"traceTreeCleansing",               "L\ttrace tree cleansing",                         TR::Options::traceOptimization, treesCleansing, 0, "P"},
    {"traceTreePatternMatching",         "L\ttrace the functioning of the TR_Pattern framework", SET_OPTION_BIT(TR_TraceTreePatternMatching), "F"},
    {"traceTrees",                       "L\tdump trees after each compilation phase", SET_OPTION_BIT(TR_TraceTrees), "P" },
    {"traceTreeSimplification",          "L\ttrace tree simplification",                    TR::Options::traceOptimization, treeSimplification, 0, "P"},
-   {"traceTreeSimplification=",         "L{regex}\tlist of additional options: mulDecompose",
-         TR::Options::setBitsFromStringSet, offsetof(OMR::Options, _traceSimplifier), 0, "P"},
    {"traceTrivialBlockExtension",       "L\ttrace trivial block extension",                TR::Options::traceOptimization, trivialBlockExtension, 0, "P"},
-   {"traceTrivialDeadTreeRemoval",      "L\ttrace trivial dead tree removal", SET_OPTION_BIT(TR_TraceTrivialDeadTreeRemoval), "P"},
+   {"traceTrivialDeadTreeRemoval",      "L\ttrace trivial dead tree removal",              TR::Options::traceOptimization, trivialDeadTreeRemoval, 0, "P"},
    {"traceUnsafeFastPath",              "L\ttrace unsafe fast path",                       TR::Options::traceOptimization, unsafeFastPath, 0, "P"},  // Java specific option
-   {"traceUnsafeInlining",              "L\ttrace unsafe inlining",                        SET_OPTION_BIT(TR_TraceUnsafeInlining), "F"},
    {"traceUseDefs",                     "L\ttrace use def info",                           SET_OPTION_BIT(TR_TraceUseDefs), "F"},
    {"traceValueNumbers",                "L\ttrace value number info",                      SET_OPTION_BIT(TR_TraceValueNumbers), "F"},
    {"traceVarHandleTransformer",        "L\ttrace VarHandle transformer",                  TR::Options::traceOptimization, varHandleTransformer, 0, "P"},  // Java specific option
@@ -1535,7 +1527,7 @@ OMR::Options::setRegex(char *option, void *base, TR::OptionTable *entry)
    TR::SimpleRegex * regex = TR::SimpleRegex::create(option);
    *((TR::SimpleRegex**)((char*)base+entry->parm1)) = regex;
    if (!regex)
-      TR_VerboseLog::write("<JIT: Bad regular expression at --> '%s'>\n", option);
+      TR_VerboseLog::writeLine("Bad regular expression at --> '%s'", option);
    return option;
    }
 
@@ -1546,7 +1538,7 @@ OMR::Options::setStaticRegex(char *option, void *base, TR::OptionTable *entry)
    TR::SimpleRegex * regex = TR::SimpleRegex::create(option);
    *((TR::SimpleRegex**)entry->parm1) = regex;
    if (!regex)
-      TR_VerboseLog::write("<JIT: Bad regular expression at --> '%s'>\n", option);
+      TR_VerboseLog::writeLine("Bad regular expression at --> '%s'", option);
    return option;
    }
 
@@ -2226,7 +2218,7 @@ OMR::Options::jitLatePostProcess(TR::OptionSet *optionSet, void * jitConfig)
       if (self()->getOption(TR_MimicInterpreterFrameShape))
          {
          if (self()->getFixedOptLevel() != -1 && self()->getFixedOptLevel() != noOpt)
-            TR_VerboseLog::write("<JIT: FullSpeedDebug: ignoring user specified optLevel>\n");
+            TR_VerboseLog::writeLine(TR_Vlog_FSD, "Ignoring user specified optLevel");
          if (_countString)
             {
             //if quickstart is enabled, then message saying it is incompatable with fsdb
@@ -2234,11 +2226,11 @@ OMR::Options::jitLatePostProcess(TR::OptionSet *optionSet, void * jitConfig)
                {
                if (TR::Options::isQuickstartDetected())
                   {
-                  TR_VerboseLog::write("<JIT: FullSpeedDebug: ignoring -Xquickstart option>\n");
+                  TR_VerboseLog::writeLine(TR_Vlog_FSD, "Ignoring -Xquickstart option");
                   }
                else
                   {
-                  TR_VerboseLog::write("<JIT: FullSpeedDebug: ignoring countString>\n");
+                  TR_VerboseLog::writeLine(TR_Vlog_FSD, "Ignoring countString");
                   }
                }
             }
@@ -2296,11 +2288,7 @@ OMR::Options::jitLatePostProcess(TR::OptionSet *optionSet, void * jitConfig)
          }
       else if (self()->requiresLogFile())
          {
-         if (this == TR::Options::getAOTCmdLineOptions())
-            TR_VerboseLog::write("<AOT");
-         else
-            TR_VerboseLog::write("<JIT");
-         TR_VerboseLog::write(": trace options require a log file to be specified: log=<filename>)>\n");
+         TR_VerboseLog::writeLine(TR_Vlog_INFO, "Trace options require a log file to be specified: log=<filename>");
          return false;
          }
 
@@ -2313,31 +2301,37 @@ OMR::Options::jitLatePostProcess(TR::OptionSet *optionSet, void * jitConfig)
          fej9->compileMethods(optionSet, jitConfig);
          if (self()->getOption(TR_WaitBit))
             {
-            TR_VerboseLog::write("Will call waitOnCompiler\n");
+            TR_VerboseLog::writeLine("Will call waitOnCompiler");
             fej9->waitOnCompiler(jitConfig);
             }
          }
-
-      // Disable regDepCopyRemoval when value types are enabled
-      //
-      // In OpenJ9, the implementation of value types does not behave well with
-      // regDepCopyRemoval. Specifically,  the ifacmp{eq,ne} operations rely on
-      // lowering that requires basic block splitting after GRA.
-      // RegDepCopyRemoval currently leaves the trees in a state that the post
-      // GRA block splitter cannot handle. So, for now, the optimization is
-      // disabled.
-      //
-      // https://github.com/eclipse/openj9/issues/9712 was opened to track the
-      // work to re-enable the optimization.
-      //
-      // Unfortunately, the design of the option processing framework requires
-      // the disabling code to be in OMR (rather than OpenJ9) and guarded
-      // with J9_PROJECT_SPECIFIC.
-      if (TR::Compiler->om.areValueTypesEnabled())
-         _disabledOptimizations[regDepCopyRemoval] = true;
 #endif
 
       }
+
+#ifdef J9_PROJECT_SPECIFIC
+
+   // Disable regDepCopyRemoval when value types are enabled
+   //
+   // In OpenJ9, the implementation of value types does not behave well with
+   // regDepCopyRemoval. Specifically,  the ifacmp{eq,ne} operations rely on
+   // lowering that requires basic block splitting after GRA.
+   // RegDepCopyRemoval currently leaves the trees in a state that the post
+   // GRA block splitter cannot handle. So, for now, the optimization is
+   // disabled.
+   //
+   // https://github.com/eclipse/openj9/issues/9712 was opened to track the
+   // work to re-enable the optimization.
+   //
+   // Unfortunately, the design of the option processing framework requires
+   // the disabling code to be in OMR (rather than OpenJ9) and guarded
+   // with J9_PROJECT_SPECIFIC.
+   if (TR::Compiler->om.areValueTypesEnabled())
+      {
+      _disabledOptimizations[regDepCopyRemoval] = true;
+      }
+
+#endif
 
    // The adding of the enumeration of register names takes up a lot
    // of heap storage (as much as 100+ MBs) for very large programs. Here
@@ -2702,7 +2696,7 @@ OMR::Options::jitPreProcess()
             if (_aggressivenessLevel != -1) // -1 means not set
                {
                if (OMR::Options::isAnyVerboseOptionSet())
-                  TR_VerboseLog::write("\n<JIT: _aggressivenessLevel=%d; must be between 0 and 5; Option ignored\n", _aggressivenessLevel);
+                  TR_VerboseLog::writeLine(TR_Vlog_INFO, "_aggressivenessLevel=%d; must be between 0 and 5; Option ignored", _aggressivenessLevel);
                _aggressivenessLevel = -1;
                }
             }
@@ -3098,10 +3092,10 @@ OMR::Options::validateOptionsTables(void *feBase, TR_FrontEnd *fe)
          }
       if (_numJitEntries > 0 && stricmp_ignore_locale((opt-1)->name, opt->name) >= 0)
          {
-         TR_VerboseLog::writeLine(TR_Vlog_FAILURE,"JIT option table entries out of order: ");
+         TR_VerboseLog::write(TR_Vlog_FAILURE, "JIT option table entries out of order: ");
          TR_VerboseLog::write((opt-1)->name);
          TR_VerboseLog::write(", ");
-         TR_VerboseLog::write(opt->name);
+         TR_VerboseLog::writeLine(opt->name);
          return false;
          }
 #endif
@@ -3259,7 +3253,7 @@ OMR::Options::processOptionSet(
             methodRegex = TR::SimpleRegex::create(endOpt);
             if (!methodRegex)
                {
-               TR_VerboseLog::write("<JIT: Bad regular expression at --> '%s'>\n", endOpt);
+               TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "Bad regular expression at --> '%s'", endOpt);
                return options;
                }
 
@@ -3270,7 +3264,7 @@ OMR::Options::processOptionSet(
                optLevelRegex = TR::SimpleRegex::create(endOpt);
                if (!optLevelRegex)
                   {
-                  TR_VerboseLog::write("<JIT: Bad regular expression at --> '%s'>\n", endOpt);
+                  TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "Bad regular expression at --> '%s'", endOpt);
                   return options;
                   }
                }
@@ -3412,7 +3406,7 @@ OMR::Options::processOptionSet(
 
          if (!endOpt)
             {
-            TR_VerboseLog::write("<JIT: Unable to allocate option string>\n");
+            TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "Unable to allocate option string");
             return options;
             }
 
@@ -3420,7 +3414,7 @@ OMR::Options::processOptionSet(
 
          if (!feEndOpt)
             {
-            TR_VerboseLog::write("<JIT: Unable to allocate option string>\n");
+            TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "Unable to allocate option string");
             return options;
             }
 
@@ -3430,7 +3424,7 @@ OMR::Options::processOptionSet(
          //
          if (feEndOpt != options && optionSet)
             {
-            TR_VerboseLog::write("<JIT: Option not allowed in option subset>\n");
+            TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "Option not allowed in option subset");
             return options;
             }
 
@@ -3546,7 +3540,7 @@ OMR::Options::processOption(
       {
       if (opt->msgInfo & NOT_IN_SUBSET)
          {
-         TR_VerboseLog::write("<JIT: option not allowed in option subset>\n");
+         TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "Option not allowed in option subset");
          opt->msgInfo = 0;
          return startOption;
          }
@@ -3570,7 +3564,7 @@ OMR::Options::processOption(
       processingMethod = TR::Options::negateProcessingMethod(opt->fcn);
       if (!processingMethod)
          {
-         TR_VerboseLog::write("<JIT: '!' is not supported for this option>\n");
+         TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "'!' is not supported for this option");
          opt->msgInfo = 0;
          return startOption;
          }
@@ -3602,6 +3596,7 @@ OMR::Options::jitPostProcess()
       {
       TR::Compiler->host.setSMP(false);
       TR::Compiler->target.setSMP(false);
+      TR::Compiler->relocatableTarget.setSMP(false);
       }
 
    if (_logFileName)
@@ -3614,7 +3609,7 @@ OMR::Options::jitPostProcess()
       }
    else if (self()->requiresLogFile())
       {
-      TR_VerboseLog::write("<JIT: the log file option must be specified when a trace options is used: log=<filename>)>\n");
+      TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "Log file option must be specified when a trace options is used: log=<filename>");
       return false;
       }
 
@@ -3633,7 +3628,7 @@ OMR::Options::jitPostProcess()
             }
          else
             {
-            TR_VerboseLog::write("<JIT: WARNING: ignoring optFile option; unable to read opts from '%s'\n", _optFileName);
+            TR_VerboseLog::writeLine(TR_Vlog_INFO, "Ignoring optFile option; unable to read opts from '%s'", _optFileName);
             }
          }
       }
@@ -3839,7 +3834,7 @@ OMR::Options::printOptions(char *options, char *envOptions)
       optionsType = "AOT";
    TR_Debug::dumpOptions(optionsType, options, envOptions, self(), _jitOptions, TR::Options::_feOptions, _feBase, _fe);
    if (_aggressivenessLevel > 0)
-       TR_VerboseLog::write("\naggressivenessLevel=%u\n", _aggressivenessLevel);
+       TR_VerboseLog::writeLine("aggressivenessLevel=%u", _aggressivenessLevel);
    }
 
 
@@ -4243,13 +4238,13 @@ OMR::Options::setCounts()
 
    if (!_countString)
       {
-      TR_VerboseLog::write("<JIT: Count string could not be allocated>\n");
+      TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "Count string could not be allocated");
       return dummy_string;
       }
 
    if (_initialCount == -1 || _initialBCount == -1 || _initialMILCount == -1)
       {
-      TR_VerboseLog::write("<JIT: Bad string count: %s>\n", _countString);
+      TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "Bad string count: '%s'", _countString);
       return _countString;
       }
 
@@ -4556,7 +4551,7 @@ OMR::Options::setAddressEnumerationBits(char *option, void *base, TR::OptionTabl
 
       TR::SimpleRegex * regex = _debug ? TR::SimpleRegex::create(option) : 0;
       if (!regex)
-         TR_VerboseLog::write("<JIT: Bad regular expression at --> '%s'>\n", option);
+         TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "Bad regular expression at --> '%s'", option);
       else
          {
          if (TR::SimpleRegex::matchIgnoringLocale(regex, "block"))
@@ -4584,7 +4579,7 @@ OMR::Options::setAddressEnumerationBits(char *option, void *base, TR::OptionTabl
             *((int32_t*)((char*)base+entry->parm1)) |= TR_EnumerateStructure;
             }
          if (*((int32_t*)((char*)base+entry->parm1)) == 0x00000000)
-            TR_VerboseLog::write("<JIT: Address enumeration option not found.  No address enumeration option was set.>");
+            TR_VerboseLog::writeLine(TR_Vlog_INFO, "Address enumeration option not found. No address enumeration option was set.");
          }
       }
 
@@ -4595,10 +4590,7 @@ OMR::Options::setAddressEnumerationBits(char *option, void *base, TR::OptionTabl
 OMR::Options::TR_OptionStringToBit OMR::Options::_optionStringToBitMapping[] = {
 // Names cannot be reused otherwise all matching bits will be set
 // bit 0x00000001 is set if any option is present
-
-// Simplifier trace options
-{ "mulDecompose", TR_TraceMulDecomposition},
-
+   
 // Debug Enable flags
 { "enableUnneededNarrowIntConversion", TR_EnableUnneededNarrowIntConversion },
 
@@ -4632,7 +4624,7 @@ OMR::Options::setBitsFromStringSet(char *option, void *base, TR::OptionTable *en
 
       TR::SimpleRegex * regex = _debug ? TR::SimpleRegex::create(option) : 0;
       if (!regex)
-         TR_VerboseLog::write("<JIT: Bad regular expression at --> '%s'>\n", option);
+         TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "Bad regular expression at --> '%s'", option);
       else
          {
          for(i=0;_optionStringToBitMapping[i].bitValue != 0;i++)
@@ -4643,7 +4635,7 @@ OMR::Options::setBitsFromStringSet(char *option, void *base, TR::OptionTable *en
              }
            }
          if (*((int32_t*)((char*)base+entry->parm1)) == 0x00000000)
-            TR_VerboseLog::write("<JIT: Register assignment tracing options not found.  No additional tracing option was set.>");
+            TR_VerboseLog::writeLine(TR_Vlog_INFO, "Register assignment tracing options not found. No additional tracing option was set.");
          }
       }
 
@@ -4663,7 +4655,7 @@ char *OMR::Options::clearBitsFromStringSet(char *option, void *base, TR::OptionT
       {
       TR::SimpleRegex * regex = TR::SimpleRegex::create(option);
       if (!regex)
-         TR_VerboseLog::write("<JIT: Bad regular expression at --> '%s'>\n", option);
+         TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "Bad regular expression at --> '%s'", option);
       else
          {
          for(i=0;_optionStringToBitMapping[i].bitValue != 0;i++)
@@ -4674,7 +4666,7 @@ char *OMR::Options::clearBitsFromStringSet(char *option, void *base, TR::OptionT
              }
            }
          if (*((int32_t*)((char*)base+entry->parm1)) == 0x00000000)
-            TR_VerboseLog::write("<JIT: Register assignment tracing options not found.  No additional tracing option was set.>");
+            TR_VerboseLog::writeLine(TR_Vlog_INFO, "Register assignment tracing options not found. No additional tracing option was set.");
          }
       }
 
@@ -4700,7 +4692,7 @@ OMR::Options::configureOptReporting(char *option, void *base, TR::OptionTable *e
          options->setOption(TR_CountOptTransformations);
          TR::SimpleRegex * regex = _debug ? TR::SimpleRegex::create(option) : 0;
          if (!regex)
-            TR_VerboseLog::write("<JIT: Bad regular expression --> '%s'>\n", option);
+            TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "Bad regular expression --> '%s'", option);
          else
             options->_verboseOptTransformationsRegex = regex;
          break;
@@ -4805,7 +4797,7 @@ OMR::Options::setVerboseBitsHelper(char *option, VerboseOptionFlagArray *verbose
       {
       TR::SimpleRegex * regex = TR::SimpleRegex::create(option);
       if (!regex)
-         TR_VerboseLog::write("<JIT: Bad regular expression at --> '%s'>\n", option);
+         TR_VerboseLog::writeLine(TR_Vlog_FAILURE, "Bad regular expression at --> '%s'", option);
       else
          {
          bool foundMatch = false;
@@ -4821,7 +4813,7 @@ OMR::Options::setVerboseBitsHelper(char *option, VerboseOptionFlagArray *verbose
             }
 
          if (!foundMatch)
-            TR_VerboseLog::write("<JIT: Verbose option not found.  No verbose option was set.>");
+            TR_VerboseLog::writeLine(TR_Vlog_INFO, "Verbose option not found. No verbose option was set.");
          }
       }
       return option;
@@ -5182,12 +5174,6 @@ bool OMR::Options::showOptionsInEffect()
 
 bool OMR::Options::fePreProcess(void*)
    {
-#if !defined(J9_PROJECT_SPECIFIC)
-   TR::Compiler->host.setNumberOfProcessors(2);
-   TR::Compiler->target.setNumberOfProcessors(2);
-   TR::Compiler->host.setSMP(true);
-   TR::Compiler->target.setSMP(true);
-#endif
    return true;
    }
 
