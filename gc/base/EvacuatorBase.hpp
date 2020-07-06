@@ -25,7 +25,7 @@
 
 #undef EVACUATOR_DEBUG
 #undef EVACUATOR_DEBUG_TRACE
-#define EVACUATOR_DEBUG_ALWAYS
+#undef EVACUATOR_DEBUG_ALWAYS
 
 #if defined(EVACUATOR_DEBUG) && defined(EVACUATOR_DEBUG_ALWAYS)
 #error "EVACUATOR_DEBUG and EVACUATOR_DEBUG_ALWAYS are mutually exclusive"
@@ -76,6 +76,7 @@ class MM_EnvironmentStandard;
 #define EVACUATOR_DEBUG_WORK 8
 #define EVACUATOR_DEBUG_STACK 16
 #define EVACUATOR_DEBUG_COPY 32
+#define EVACUATOR_DEBUG_CONDITIONS 32
 #define EVACUATOR_DEBUG_REMEMBERED 64
 #define EVACUATOR_DEBUG_ALLOCATE 128
 #define EVACUATOR_DEBUG_WHITELISTS 256
@@ -367,6 +368,7 @@ public:
 	bool isDebugStack() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_STACK); }
 	bool isDebugWork() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_WORK); }
 	bool isDebugCopy() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_COPY); }
+	bool isDebugConditions() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_CONDITIONS); }
 	bool isDebugRemembered() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_REMEMBERED); }
 	bool isDebugWhitelists() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_WHITELISTS); }
 	bool isDebugPoisonDiscard() const { return isAnyDebugFlagSet(EVACUATOR_DEBUG_POISON_DISCARD); }
@@ -384,6 +386,7 @@ public:
 	bool isDebugWork() const { return false; }
 	bool isDebugStack() const { return false; }
 	bool isDebugCopy() const { return false; }
+	bool isDebugConditions() const { return false; }
 	bool isDebugRemembered() const { return false; }
 	bool isDebugWhitelists() const { return false; }
 	bool isDebugPoisonDiscard() const { return false; }

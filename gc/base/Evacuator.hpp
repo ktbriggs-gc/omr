@@ -71,8 +71,6 @@ private:
 	const MM_EvacuatorScanspace * const _stackTop;	/* physical limit determines number of frames allocated for scan stack */
 	const MM_EvacuatorScanspace * const _stackCeiling;	/* normative limit determines maximal depth of scan stack (may be below top) */
 	MM_EvacuatorScanspace * _scanStackFrame;		/* points to active stack frame, NULL if scan stack empty */
-	uintptr_t _slotExpandedVolume;					/* cumulative volume of work evacuated while scanning bottom-most slot on stack */
-	const uintptr_t _slotVolumeThreshold;			/* stack overflow raised when slot expanded volume exceeds threshold */
 	MM_EvacuatorScanspace * _whiteStackFrame[2];	/* pointers to stack frames that hold reserved survivor/tenure inside whitespace */
 
 	MM_EvacuatorCopyspace * const _copyspace;		/* pointers to survivor/tenure outside copyspaces that receive outside copy */
@@ -86,6 +84,7 @@ private:
 	uintptr_t _copyspaceOverflow[2];				/* volume of copy overflowing outside copyspaces, reset when outside copyspace is refreshed */
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+	uintptr_t * const _activationCounts;			/* histogram counters for stack frame activation, indexed by stack frame */
 	uintptr_t _conditionCounts[conditions_mask + 1];/* histogram counters for condition flags, indexed by 8-bit pattern of flags */
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
@@ -108,7 +107,6 @@ private:
 	MMINLINE bool getWork();
 	MMINLINE void findWork();
 
-	void clear();
 	MMINLINE void pull(MM_EvacuatorWorklist *worklist);
 	MMINLINE void pull(MM_EvacuatorCopyspace *copyspace);
 
@@ -121,7 +119,6 @@ private:
 	MMINLINE void chain(omrobjectptr_t linkedObject, const uintptr_t selfReferencingSlotOffset, const uintptr_t worklistVolumeCeiling);
 	MMINLINE bool isTop(const MM_EvacuatorScanspace *stackframe);
 	MMINLINE MM_EvacuatorScanspace *top(intptr_t offset = 0);
-	void moveStackWhiteFrame(Region region, MM_EvacuatorScanspace *toFrame);
 
 	MMINLINE bool reserveInsideScanspace(const Region region, const uintptr_t slotObjectSizeAfterCopy);
 	MMINLINE omrobjectptr_t copyForward(MM_ForwardedHeader *forwardedHeader, fomrobject_t *referringSlotAddress, MM_EvacuatorCopyspace * const copyspace, const uintptr_t originalLength, const uintptr_t forwardedLength);
@@ -142,6 +139,7 @@ private:
 	MMINLINE void gotWork();
 
 	/* workflow conditions regulate switching copy between inside/outside scan/copyspaces, inside copy distance, workspace release threshold, ... */
+	MMINLINE bool selectCondition(ConditionFlag condition, bool force = false);
 	MMINLINE void setCondition(ConditionFlag condition, bool value);
 	MMINLINE ConditionFlag copyspaceTailFillCondition(Region region) const;
 	MMINLINE bool isForceOutsideCopyCondition(Region region) const;
@@ -398,8 +396,20 @@ public:
 	uintptr_t getRecycled() { return _whiteList[survivor].getRecycled() + _whiteList[tenure].getRecycled(); }
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-	uintptr_t getStackActivationCount(uintptr_t depth) { return _stackBottom[depth].getActivationCount(); }
-	const uintptr_t *getConditionCounts() { return (const uintptr_t *)_conditionCounts; }
+	void
+	sumStackActivationCounts(uintptr_t *frameCounters, uintptr_t frameCount)
+	{
+		uintptr_t stackDepth = _stackTop - _stackBottom;
+		for (uintptr_t i = 0; i < OMR_MIN(frameCount,  stackDepth); i += 1) {
+			frameCounters[i] += _activationCounts[i];
+		}
+	}
+	const uintptr_t *
+	getConditionCounts(uintptr_t *conditionCount)
+	{
+		*conditionCount = conditions_mask + 1;
+		return (const uintptr_t *)_conditionCounts;
+	}
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
 #if defined(EVACUATOR_DEBUG)
@@ -435,14 +445,15 @@ public:
 		, _stackTop(_stackBottom + OMR_MAX(_maxStackDepth, unreachable))
 		, _stackCeiling(_stackBottom + _maxStackDepth)
 		, _scanStackFrame(NULL)
-		, _slotExpandedVolume(0)
-		, _slotVolumeThreshold(_extensions->tlhMaximumSize)
 		, _copyspace(MM_EvacuatorCopyspace::newInstanceArray(_forge))
 		, _whiteList(MM_EvacuatorWhitelist::newInstanceArray(_forge))
 		, _largeCopyspace()
 		, _freeList(_forge)
 		, _workList(&_freeList)
 		, _mutex(NULL)
+#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+		, _activationCounts((uintptr_t *)_forge->allocate(sizeof(uintptr_t) * (_stackTop - _stackBottom), OMR::GC::AllocationCategory::FIXED, OMR_GET_CALLSITE()))
+#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 		, _abortedCycle(false)
 	{
 		_typeId = __FUNCTION__;
@@ -460,6 +471,7 @@ public:
 		_copyspaceOverflow[survivor] = _copyspaceOverflow[tenure] = 0;
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+		memset(_activationCounts, 0, sizeof(uintptr_t) * (_stackTop - _stackBottom));
 		memset(_conditionCounts, 0, sizeof(_conditionCounts));
 		Debug_MM_true(0 == (_objectModel->getObjectAlignmentInBytes() % sizeof(uintptr_t)));
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */

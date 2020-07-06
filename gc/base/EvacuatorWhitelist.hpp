@@ -43,13 +43,15 @@
  * of course when the contained whitespace is overwritten after acquisition. Until then the
  * property functions return valid results.
  */
-class MM_EvacuatorWhitespace {
+class MM_EvacuatorWhitespace : public MM_HeapLinkedFreeHeader
+{
 	/*
 	 * Data members
 	 */
 private:
-	enum { tenure = 1, loa = 2, tenure_loa = 3, poisoned = 4 };
-	uintptr_t _lengthAndFlags;
+	enum { loa = 1 };
+	static const int32_t check = 0x03030303;
+	intptr_t _flags;
 protected:
 public:
 
@@ -60,57 +62,31 @@ private:
 protected:
 public:
 	static MM_EvacuatorWhitespace *
-	whitespace(MM_EvacuatorBase::Region region, void *address, uintptr_t length, bool compressed, bool poison = false, bool isLOA = false)
+	whitespace(void *address, uintptr_t length, bool compressed, bool isLOA = false)
 	{
-		Debug_MM_true((MM_EvacuatorBase::tenure == region) || (MM_EvacuatorBase::survivor == region));
-		Debug_MM_true((sizeof(MM_EvacuatorWhitespace) <= length) || (0 == length));
 		Debug_MM_true(0 == (((uintptr_t)address) % sizeof(uintptr_t)));
 		Debug_MM_true(0 == (length % sizeof(uintptr_t)));
 
-		MM_EvacuatorWhitespace *space = NULL;
+		MM_EvacuatorWhitespace *space = (length == 0) ? NULL : (MM_EvacuatorWhitespace *)MM_HeapLinkedFreeHeader::fillWithHoles(address, length, compressed);
 		if (sizeof(MM_EvacuatorWhitespace) <= length) {
-			space = (MM_EvacuatorWhitespace *)address;
-			if (region == MM_EvacuatorBase::tenure) {
-				space->_lengthAndFlags = (length << tenure_loa) | (uintptr_t)(isLOA ? tenure_loa : tenure);
-			} else {
-				space->_lengthAndFlags = (length << tenure_loa) | (uintptr_t)(isLOA ? loa : 0);
-			}
-			if (poison) {
-				space-> _lengthAndFlags |= poisoned;
-			}
+			space->_flags = isLOA ? MM_EvacuatorWhitespace::loa : 0;
 		}
-		Debug_MM_true(space->isWhitespace((uint8_t *)space + sizeof(MM_EvacuatorWhitespace), length - sizeof(MM_EvacuatorWhitespace), poison));
+		Debug_MM_true((NULL == space) || (length == space->length()));
 		return space;
 	}
 
-	static bool
-	isWhitespace(void *space, uintptr_t length, bool poisoned = false)
+	uintptr_t
+	length()
 	{
-		Debug_MM_true(0 == (((uintptr_t)space) % sizeof(uintptr_t)));
-		const uint32_t hole32 = (uint32_t)J9_GC_SINGLE_SLOT_HOLE;
-		const uint32_t holes32 = (hole32 << 24) | (hole32 << 16) | (hole32 << 8) | hole32;
-		const uint32_t *space32 = (uint32_t *)((uintptr_t)space + sizeof(MM_EvacuatorWhitespace));
-		if ((NULL == space) || ((length < 0) && (length < sizeof(MM_EvacuatorWhitespace)))) {
-			return false;
-		} else if ((0 == length) || (length == sizeof(MM_EvacuatorWhitespace))) {
-			return true;
-		} else if (!poisoned || ((*space32 == holes32) && (*(space32 + 1) == holes32))) {
-			return true;
+		uintptr_t length = 0, *next = &_next;
+		while (J9_GC_SINGLE_SLOT_HOLE == (*next & J9_GC_SINGLE_SLOT_HOLE)) {
+			length += sizeof(uintptr_t);
+			next += 1;
 		}
-		return false;
+		return (0 < length) ? length : getSize();
 	}
 
-	MM_EvacuatorBase::Region getEvacuationRegion() const { return isTenure() ? MM_EvacuatorBase::tenure : MM_EvacuatorBase::survivor; }
-
-	bool isWhitespace() { return isWhitespace((uint8_t *)this, length() - sizeof(MM_EvacuatorWhitespace), isPoisoned()); }
-
-	bool isTenure() const { return ((uintptr_t)tenure == (_lengthAndFlags & (uintptr_t)tenure)); }
-
-	bool isLOA() const { return ((uintptr_t)loa == (_lengthAndFlags & (uintptr_t)loa)); }
-
-	bool isPoisoned() const { return ((uintptr_t)poisoned == (_lengthAndFlags & (uintptr_t)poisoned)); }
-
-	uintptr_t length() const { return (_lengthAndFlags >> tenure_loa); }
+	bool isLOA() { return (sizeof(MM_EvacuatorWhitespace) <= length()) && (loa == (_flags & loa)); }
 
 	uint8_t *getBase() { return (uint8_t *)this; }
 

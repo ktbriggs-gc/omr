@@ -826,7 +826,11 @@ MM_Scavenger::mergeThreadGCStats(MM_EnvironmentBase *env)
 	mergeGCStatsBase(env, &_extensions->incrementScavengerStats, scavStats);
 
 	/* Merge language specific statistics. No known interesting data per increment - they are merged directly to aggregate cycle stats */
-	_delegate.mergeGCStats_mergeLangStats(env);
+	if (!_extensions->isEvacuatorEnabled()) {
+		_delegate.mergeGCStats_mergeLangStats(env);
+	} else {
+		MM_EvacuatorDelegate::mergeGCStats(env);
+	}
 
 	omrthread_monitor_exit(_extensions->gcStatsMutex);
 
