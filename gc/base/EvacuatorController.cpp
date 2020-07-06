@@ -531,109 +531,6 @@ MM_EvacuatorController::isWaitingForWork(MM_Evacuator *worker)
 }
 
 uintptr_t
-MM_EvacuatorController::reportProgress(MM_Evacuator *worker,  uintptr_t *baseVolumeMetrics, uintptr_t *currentVolumeMetrics)
-{
-	/* any or all of these counters may be updated while this thread is sampling them, but epoch boundaries are metered by scanned volume */
-	uintptr_t baseScannedMetric = _aggregateVolumeMetrics[MM_Evacuator::scanned];
-	uintptr_t sampledVolumeMetrics[] = {
-		VM_AtomicSupport::add(&_aggregateVolumeMetrics[MM_Evacuator::survivor_copy], (currentVolumeMetrics[MM_Evacuator::survivor_copy] - baseVolumeMetrics[MM_Evacuator::survivor_copy])),
-		VM_AtomicSupport::add(&_aggregateVolumeMetrics[MM_Evacuator::tenure_copy], (currentVolumeMetrics[MM_Evacuator::tenure_copy] - baseVolumeMetrics[MM_Evacuator::tenure_copy])),
-		VM_AtomicSupport::add(&_aggregateVolumeMetrics[MM_Evacuator::scanned], (currentVolumeMetrics[MM_Evacuator::scanned] - baseVolumeMetrics[MM_Evacuator::scanned])),
-	};
-	reportProgress(worker, baseScannedMetric, sampledVolumeMetrics);
-	for (intptr_t metric = MM_Evacuator::survivor_copy; metric < MM_Evacuator::metrics; metric += 1) {
-		baseVolumeMetrics[metric] = currentVolumeMetrics[metric];
-	}
-	return 0;
-}
-
-void
-MM_EvacuatorController::reportProgress(MM_Evacuator *worker, uintptr_t baseScannedMetric, uintptr_t *sampledVolumeMetrics)
-{
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-	/* these are default values in case _bytesPerReportingEpoch has not yet been set (see thread count knot in bindWorker()) */
-	uintptr_t oldEpoch = 0, newEpoch = 1;
-	if (0 < _bytesPerReportingEpoch) {
-		oldEpoch = baseScannedMetric / _bytesPerReportingEpoch;
-		newEpoch = sampledVolumeMetrics[MM_Evacuator::scanned] / _bytesPerReportingEpoch;
-	}
-
-	/* trigger end of epoch when scanned bytes counter crosses an epoch boundary or generational invariant is satisfied */
-	uintptr_t newCopiedValue = sampledVolumeMetrics[MM_Evacuator::survivor_copy] + sampledVolumeMetrics[MM_Evacuator::tenure_copy];
-	bool lastEpoch = (0 < sampledVolumeMetrics[MM_Evacuator::scanned]) && (newCopiedValue == sampledVolumeMetrics[MM_Evacuator::scanned]);
-	if ((oldEpoch < newEpoch) || lastEpoch) {
-
-		const MM_EvacuatorHistory::Epoch *currentEpoch = _history.getEpoch();
-		uintptr_t currentProgress = currentEpoch->survivorCopied + currentEpoch->tenureCopied + currentEpoch->scanned;
-		uintptr_t sampledProgress = sampledVolumeMetrics[MM_Evacuator::survivor_copy] + sampledVolumeMetrics[MM_Evacuator::tenure_copy] + sampledVolumeMetrics[MM_Evacuator::scanned];
-		if (currentProgress < sampledProgress) {
-
-			omrthread_monitor_enter(_reporterMutex);
-
-			currentEpoch = _history.getEpoch();
-			currentProgress = currentEpoch->survivorCopied + currentEpoch->tenureCopied + currentEpoch->scanned;
-			if (currentProgress < sampledProgress) {
-
-				/* get current timestamp to mark start of next epoch */
-				OMRPORT_ACCESS_FROM_ENVIRONMENT(worker->getEnvironment());
-				uint64_t currentTimestamp = omrtime_hires_clock();
-
-				/* run around the bus sampling worklist volumes for all evacuators */
-				uintptr_t clears = 0, stalls = 0;
-				uintptr_t histogram[] = {0, 0, 0};
-				uintptr_t maxVolume = 0, minVolume = UINTPTR_MAX, totalVolume = 0;
-				uintptr_t volumeQuota = getWorkNotificationQuota(_minimumWorkspaceSize);
-				for (uintptr_t index = 0; index < _evacuatorCount; index += 1) {
-					MM_Evacuator *next = isBoundEvacuator(index) ? _evacuatorTask[index] : NULL;
-					if (NULL != next) {
-						uintptr_t volume = next->getVolumeOfWork();
-						totalVolume += volume;
-						if (volume > maxVolume) {
-							maxVolume = volume;
-						}
-						if (volume < minVolume) {
-							minVolume = volume;
-						}
-						if (0 == volume) {
-							histogram[0] += 1;
-						} else if (volume < volumeQuota) {
-							histogram[1] += 1;
-						} else {
-							histogram[2] += 1;
-						}
-						clears += next->_stats->_acquireScanListCount;
-						stalls += next->_stats->_workStallCount;
-					}
-				}
-
-				/* get next epoch record and fill it in */
-				MM_EvacuatorHistory::Epoch *epoch = _history.nextEpoch(newEpoch);
-				epoch->gc = worker->getEnvironment()->_scavengerStats._gcCount;
-				epoch->epoch = newEpoch;
-				epoch->duration = omrtime_hires_delta(_history.epochStartTime(currentTimestamp), currentTimestamp, OMRPORT_TIME_DELTA_IN_MICROSECONDS);
-				epoch->survivorAllocationCeiling = _copyspaceAllocationCeiling[MM_Evacuator::survivor];
-				epoch->tenureAllocationCeiling = _copyspaceAllocationCeiling[MM_Evacuator::tenure];
-				epoch->cleared = clears;
-				epoch->stalled = stalls;
-				epoch->survivorCopied = sampledVolumeMetrics[MM_Evacuator::survivor_copy];
-				epoch->tenureCopied = sampledVolumeMetrics[MM_Evacuator::tenure_copy];
-				epoch->scanned = sampledVolumeMetrics[MM_Evacuator::scanned];
-				epoch->sumVolumeOfWork = totalVolume;
-				epoch->minVolumeOfWork = minVolume;
-				epoch->maxVolumeOfWork = maxVolume;
-				for (uintptr_t i = 0; i < 3; i += 1) {
-					epoch->volumeHistogram[i] = histogram[i];
-				}
-				epoch->volumeQuota = volumeQuota;
-			}
-
-			omrthread_monitor_exit(_reporterMutex);
-		}
-	}
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
-}
-
-uintptr_t
 MM_EvacuatorController::calculateProjectedEvacuationBytes() const
 {
 	/* use the modal projection once it has a full window of actual survivor volumes */
@@ -650,30 +547,17 @@ MM_EvacuatorController::calculateOptimalWhitespaceSize(MM_Evacuator::Region regi
 {
 	/* monitor aggregate survivor copy volume and reduce tlh allocation size when running low */
 	if (MM_Evacuator::survivor == region) {
-		Debug_MM_true((_heapLayout[MM_Evacuator::survivor][1] - _heapLayout[MM_Evacuator::survivor][0]) >= _aggregateVolumeMetrics[MM_Evacuator::survivor_copy]);
+		Debug_MM_true((uintptr_t)(_heapLayout[MM_Evacuator::survivor][1] - _heapLayout[MM_Evacuator::survivor][0]) >= _aggregateVolumeMetrics[MM_Evacuator::survivor_copy]);
 		Debug_MM_true((_maximumCopyspaceSize >> 3) >= _minimumCopyspaceSize);
 
 		/* calculate approximate total survivor whitespace remaining given current aggregate reported survivor bytes copied */
 		uintptr_t survivorVolume = _heapLayout[MM_Evacuator::survivor][1] - _heapLayout[MM_Evacuator::survivor][0];
 		uintptr_t approximateTotalSurvivorRemaining = survivorVolume - _aggregateVolumeMetrics[MM_Evacuator::survivor_copy];
 
-		/* if more than 3/4 of survivor is committed adjust remainder estimate */
-		if (approximateTotalSurvivorRemaining < (survivorVolume >> 2)) {
-			/* adjust down assuming each evacuator on average is halfway through reporting delta */
-			uintptr_t approximateUnreportedSurvivorCopied = _evacuatorCount * (_copiedBytesReportingDelta >> 1);
-			approximateTotalSurvivorRemaining -= approximateUnreportedSurvivorCopied;
-		}
-
-		/* scale down allocation ceiling if survivor copy flows into the last 3 reporting epochs */
-		uintptr_t allocationCeiling = _copyspaceAllocationCeiling[MM_Evacuator::survivor];
-
-		/* if each epoch consumes 1/64 of survivor whitespace this kicks in when survivor semispace is >95% full */
-		if (approximateTotalSurvivorRemaining < _bytesPerReportingEpoch) {
-			allocationCeiling = _maximumCopyspaceSize >> 3;
-		} else if (approximateTotalSurvivorRemaining < (2 * _bytesPerReportingEpoch)) {
-			allocationCeiling = _maximumCopyspaceSize >> 2;
-		} else if (approximateTotalSurvivorRemaining < (3 * _bytesPerReportingEpoch)) {
-			allocationCeiling = _maximumCopyspaceSize >> 1;
+		/* calculate ceiling high enough to support 4 allocations/thread but no smaller that minimum */
+		uintptr_t allocationCeiling = approximateTotalSurvivorRemaining / (_evacuatorCount << 2);
+		if (allocationCeiling < _minimumCopyspaceSize) {
+			allocationCeiling = _minimumCopyspaceSize;
 		}
 
 		/* set survivor copyspace allocation ceiling for all evacuators */
@@ -715,7 +599,7 @@ MM_EvacuatorController::getWhitespace(MM_Evacuator *evacuator, MM_Evacuator::Reg
 
 				/* got a tlh of some size <= optimalSize */
 				uintptr_t whitesize = (uintptr_t)addrTop - (uintptr_t)addrBase;
-				whitespace = MM_EvacuatorWhitespace::whitespace(region, allocation, whitesize, env->compressObjectReferences(),  allocateDescription.isLOAAllocation());
+				whitespace = MM_EvacuatorWhitespace::whitespace(allocation, whitesize, env->compressObjectReferences(),  allocateDescription.isLOAAllocation());
 
 				env->_scavengerStats.countCopyCacheSize(whitesize, _maximumCopyspaceSize);
 				if (MM_Evacuator::survivor == region) {
@@ -773,7 +657,7 @@ MM_EvacuatorController::getObjectWhitespace(MM_Evacuator *evacuator, MM_Evacuato
 #endif /* defined(EVACUATOR_DEBUG) */
 		Debug_MM_true(isObjectAligned(allocation));
 
-		whitespace = MM_EvacuatorWhitespace::whitespace(region, allocation, length, env->compressObjectReferences(), allocateDescription.isLOAAllocation());
+		whitespace = MM_EvacuatorWhitespace::whitespace(allocation, length, env->compressObjectReferences(), allocateDescription.isLOAAllocation());
 		env->_scavengerStats.countCopyCacheSize(length, _maximumCopyspaceSize);
 		if (MM_Evacuator::survivor == region) {
 			env->_scavengerStats._semiSpaceAllocationCountLarge += 1;
@@ -877,6 +761,90 @@ MM_EvacuatorController::clearEvacuatorBit(uintptr_t evacuatorIndex, volatile uin
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 void
+MM_EvacuatorController::reportProgress(MM_Evacuator *worker, uintptr_t baseScannedMetric, uintptr_t *sampledVolumeMetrics)
+{
+	/* these are default values in case _bytesPerReportingEpoch has not yet been set (see thread count knot in bindWorker()) */
+	uintptr_t oldEpoch = 0, newEpoch = 1;
+	if (0 < _bytesPerReportingEpoch) {
+		oldEpoch = baseScannedMetric / _bytesPerReportingEpoch;
+		newEpoch = sampledVolumeMetrics[MM_Evacuator::survivor_copy] / _bytesPerReportingEpoch;
+	}
+
+	/* trigger end of epoch when scanned bytes counter crosses an epoch boundary or generational invariant is satisfied */
+	uintptr_t newCopiedValue = sampledVolumeMetrics[MM_Evacuator::survivor_copy] + sampledVolumeMetrics[MM_Evacuator::tenure_copy];
+	bool lastEpoch = (0 < sampledVolumeMetrics[MM_Evacuator::scanned]) && (newCopiedValue == sampledVolumeMetrics[MM_Evacuator::scanned]);
+	if ((oldEpoch < newEpoch) || lastEpoch) {
+
+		const MM_EvacuatorHistory::Epoch *currentEpoch = _history.getEpoch();
+		uintptr_t currentProgress = currentEpoch->survivorCopied + currentEpoch->tenureCopied + currentEpoch->scanned;
+		uintptr_t sampledProgress = sampledVolumeMetrics[MM_Evacuator::survivor_copy] + sampledVolumeMetrics[MM_Evacuator::tenure_copy] + sampledVolumeMetrics[MM_Evacuator::scanned];
+		if (currentProgress < sampledProgress) {
+
+			omrthread_monitor_enter(_reporterMutex);
+
+			currentEpoch = _history.getEpoch();
+			currentProgress = currentEpoch->survivorCopied + currentEpoch->tenureCopied + currentEpoch->scanned;
+			if (currentProgress < sampledProgress) {
+
+				/* get current timestamp to mark start of next epoch */
+				OMRPORT_ACCESS_FROM_ENVIRONMENT(worker->getEnvironment());
+				uint64_t currentTimestamp = omrtime_hires_clock();
+
+				/* run around the bus sampling worklist volumes for all evacuators */
+				uintptr_t clears = 0, stalls = 0;
+				uintptr_t histogram[] = {0, 0, 0};
+				uintptr_t maxVolume = 0, minVolume = UINTPTR_MAX, totalVolume = 0;
+				uintptr_t volumeQuota = getWorkNotificationQuota(_minimumWorkspaceSize);
+				for (uintptr_t index = 0; index < _evacuatorCount; index += 1) {
+					MM_Evacuator *next = isBoundEvacuator(index) ? _evacuatorTask[index] : NULL;
+					if (NULL != next) {
+						uintptr_t volume = next->getVolumeOfWork();
+						totalVolume += volume;
+						if (volume > maxVolume) {
+							maxVolume = volume;
+						}
+						if (volume < minVolume) {
+							minVolume = volume;
+						}
+						if (0 == volume) {
+							histogram[0] += 1;
+						} else if (volume < volumeQuota) {
+							histogram[1] += 1;
+						} else {
+							histogram[2] += 1;
+						}
+						clears += next->_stats->_acquireScanListCount;
+						stalls += next->_stats->_workStallCount;
+					}
+				}
+
+				/* get next epoch record and fill it in */
+				MM_EvacuatorHistory::Epoch *epoch = _history.nextEpoch(newEpoch);
+				epoch->gc = worker->getEnvironment()->_scavengerStats._gcCount;
+				epoch->epoch = newEpoch;
+				epoch->duration = omrtime_hires_delta(_history.epochStartTime(currentTimestamp), currentTimestamp, OMRPORT_TIME_DELTA_IN_MICROSECONDS);
+				epoch->survivorAllocationCeiling = _copyspaceAllocationCeiling[MM_Evacuator::survivor];
+				epoch->tenureAllocationCeiling = _copyspaceAllocationCeiling[MM_Evacuator::tenure];
+				epoch->cleared = clears;
+				epoch->stalled = stalls;
+				epoch->survivorCopied = sampledVolumeMetrics[MM_Evacuator::survivor_copy];
+				epoch->tenureCopied = sampledVolumeMetrics[MM_Evacuator::tenure_copy];
+				epoch->scanned = sampledVolumeMetrics[MM_Evacuator::scanned];
+				epoch->sumVolumeOfWork = totalVolume;
+				epoch->minVolumeOfWork = minVolume;
+				epoch->maxVolumeOfWork = maxVolume;
+				for (uintptr_t i = 0; i < 3; i += 1) {
+					epoch->volumeHistogram[i] = histogram[i];
+				}
+				epoch->volumeQuota = volumeQuota;
+			}
+
+			omrthread_monitor_exit(_reporterMutex);
+		}
+	}
+}
+
+void
 MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
 {
 #if defined(EVACUATOR_DEBUG)
@@ -962,9 +930,12 @@ MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
 			uint64_t copiedBytes = _aggregateVolumeMetrics[MM_Evacuator::survivor_copy] + _aggregateVolumeMetrics[MM_Evacuator::tenure_copy];
 			uint64_t insideBytes = (copiedBytes > stats->_work_packetsize_sum) ? (copiedBytes - stats->_work_packetsize_sum) : 0;
 			double insideCopied = (0 < copiedBytes) ? ((double)insideBytes / (double)copiedBytes) : 1.0;
-			omrtty_printf("%5lu %2lu   :%10s; %lx %lx %0.3f %lx %lx %lx %lx\n", getEpoch()->gc, getEpoch()->epoch, isAborting() ? "backout" : "end cycle",
-					copiedBytes, _aggregateVolumeMetrics[MM_Evacuator::scanned], insideCopied, _aggregateVolumeMetrics[MM_Evacuator::tenure_copy], _finalDiscardedBytes, _finalFlushedBytes, _finalRecycledBytes);
-			reportConditionCounts(getEpoch()->gc, getEpoch()->epoch);
+			omrtty_printf("%5lu %2lu   :%10s; %lx %lx %lx %0.3f %lx %lx %lx\n", getEpoch()->gc, getEpoch()->epoch,
+					isAborting() ? "backout" : "end cycle",
+					_aggregateVolumeMetrics[MM_Evacuator::survivor_copy], _aggregateVolumeMetrics[MM_Evacuator::tenure_copy], _aggregateVolumeMetrics[MM_Evacuator::scanned], insideCopied, _finalDiscardedBytes, _finalFlushedBytes, _finalRecycledBytes);
+			if (MM_Evacuator::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_CONDITIONS)) {
+				reportConditionCounts(getEpoch()->gc, getEpoch()->epoch);
+			}
 
 //			Debug_MM_true((_finalDiscardedBytes + _finalFlushedBytes) == (stats->_flipDiscardBytes + stats->_tenureDiscardBytes));
 			if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_EPOCH)) {
@@ -983,10 +954,10 @@ MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
 						uintptr_t unscanned = (totalCopied > epoch->scanned) ? (totalCopied - epoch->scanned) : 0;
 						double copyScanRatio = (0 < epoch->scanned) ? ((double)totalCopied / (double)epoch->scanned) : 0.0;
 						double deltaCopyScanRatio = (0 < deltaScanned) ? ((double)deltaCopied / (double)deltaScanned) : 0.0;
-						omrtty_printf("%5lu %2lu  0:     epoch; %6.3f %6.3f %8lx %8lx %8lx %8lx %8lx %8lx %8.3f ", epoch->gc, epoch->epoch,
+						omrtty_printf("%5lu %2lu  0:     epoch; %6.3f %6.3f %8lx %8lx %8lx %8lx %8lx %8lx %8.3f %0.3f ", epoch->gc, epoch->epoch,
 								copyScanRatio, deltaCopyScanRatio, epoch->survivorCopied, epoch->tenureCopied,	epoch->scanned, unscanned,
 								epoch->survivorAllocationCeiling, epoch->tenureAllocationCeiling,
-								((double)(epoch->duration) / 1000.0));
+								((double)(epoch->duration) / 1000.0), ((double)(epoch->survivorCopied) / (double)_modalSurvivorVolumeMetric));
 						omrtty_printf("%8lx %8lx %8lx %6lx %3lx %3lx %3lx %4lu %3lu\n", epoch->sumVolumeOfWork, epoch->minVolumeOfWork, epoch->maxVolumeOfWork,
 								epoch->volumeQuota, epoch->volumeHistogram[0], epoch->volumeHistogram[1], epoch->volumeHistogram[2], epoch->cleared, epoch->stalled);
 					}
@@ -1017,15 +988,16 @@ MM_EvacuatorController::reportConditionCounts(uintptr_t gc, uintptr_t epoch)
 
 	uintptr_t objectCount = 0;
 	for (uintptr_t index = 0; index < _evacuatorCount; index++) {
-		const uintptr_t *conditionCounts = _evacuatorTask[index]->getConditionCounts();
-		for (uintptr_t flags = 0; flags <= MM_Evacuator::conditions_mask; flags += 1) {
+		uintptr_t flags = 0;
+		const uintptr_t *conditionFlags = _evacuatorTask[index]->getConditionCounts(&flags);
+		for (uintptr_t flag = 0; flag < flags; flag += 1) {
 			for (uintptr_t condition = 1; condition < conditionCount; condition += 1) {
-				if (0 != (flags & (1 << condition))) {
-					conditionCountSummary[condition] += conditionCounts[flags];
+				if (0 != (flag & (1 << condition))) {
+					conditionCountSummary[condition] += conditionFlags[flag];
 				}
 			}
-			conditionCountTotals[flags] += conditionCounts[flags];
-			objectCount += conditionCounts[flags];
+			conditionCountTotals[flag] += conditionFlags[flag];
+			objectCount += conditionFlags[flag];
 		}
 	}
 	conditionCountSummary[0] = conditionCountTotals[0];
@@ -1069,12 +1041,14 @@ uintptr_t
 MM_EvacuatorController::sumStackActivations(uintptr_t *stackActivations, uintptr_t maxFrame)
 {
 	uintptr_t sum = 0;
-	for (uintptr_t depth = 0; depth < maxFrame; depth += 1) {
-		stackActivations[depth] = 0;
-		for (uintptr_t evacuator = 0; evacuator < _evacuatorCount; evacuator += 1) {
-			stackActivations[depth] += _evacuatorTask[evacuator]->getStackActivationCount(depth);
-		}
-		sum += stackActivations[depth];
+	for (uintptr_t i = 0; i < maxFrame; i += 1) {
+		stackActivations[i] = 0;
+	}
+	for (uintptr_t evacuator = 0; evacuator < _evacuatorCount; evacuator += 1) {
+		_evacuatorTask[evacuator]->sumStackActivationCounts(stackActivations, maxFrame);
+	}
+	for (uintptr_t j = 0; j < maxFrame; j += 1) {
+		sum += stackActivations[j];
 	}
 	return sum;
 }

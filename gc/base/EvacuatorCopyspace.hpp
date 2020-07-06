@@ -288,10 +288,9 @@ public:
 		assertCopyspaceInvariant();
 		MM_EvacuatorWhitespace *whitespace = NULL;
 
-		whitespace = MM_EvacuatorWhitespace::whitespace(getEvacuationRegion(), _copy, (_end - _copy), _evacuator->compressObjectReferences(), isLOA());
+		whitespace = MM_EvacuatorWhitespace::whitespace(_copy, (_end - _copy), _evacuator->compressObjectReferences(), isLOA());
 		_end = _copy;
 
-		Debug_MM_true((NULL == whitespace) || getEvacuationRegion() == whitespace->getEvacuationRegion());
 		assertCopyspaceInvariant();
 		return whitespace;
 	}
@@ -304,7 +303,6 @@ public:
 		Debug_MM_true(NULL != _end);
 		Debug_MM_true(_base <= _copy);
 		Debug_MM_true(_copy <= _end);
-		Debug_MM_true((_base == _copy) ||(_end == _copy) || MM_EvacuatorWhitespace::isWhitespace(_copy, _end - _copy, _evacuator->isTraceOptionSelected(EVACUATOR_DEBUG_POISON_DISCARD)));
 		Debug_MM_true((uintptr_t)(_end - _base) <= ((3 *_evacuator->getExtensions()->tlhMaximumSize) << 1));
 #if defined(EVACUATOR_DEBUG)
 		MM_EvacuatorBase::Region region = isTenure() ? MM_EvacuatorBase::tenure: MM_EvacuatorBase::survivor;

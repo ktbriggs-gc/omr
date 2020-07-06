@@ -826,7 +826,11 @@ MM_Scavenger::mergeThreadGCStats(MM_EnvironmentBase *env)
 	mergeGCStatsBase(env, &_extensions->incrementScavengerStats, scavStats);
 
 	/* Merge language specific statistics. No known interesting data per increment - they are merged directly to aggregate cycle stats */
-	_delegate.mergeGCStats_mergeLangStats(env);
+	if (!_extensions->isEvacuatorEnabled()) {
+		_delegate.mergeGCStats_mergeLangStats(env);
+	} else {
+		MM_EvacuatorDelegate::mergeGCStats(env);
+	}
 
 	omrthread_monitor_exit(_extensions->gcStatsMutex);
 
@@ -1792,6 +1796,9 @@ MM_Scavenger::splitIndexableObjectScanner(MM_EnvironmentStandard *env, GC_Object
 		uintptr_t endIndex = startIndex + scvArraySplitAmount;
 
 		if (endIndex < maxIndex) {
+#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+			Assert_MM_true(!_extensions->isEvacuatorEnabled());
+#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 			/* try to split the remainder into a new copy cache */
 			MM_CopyScanCacheStandard* splitCache = getFreeCache(env);
 			if (NULL != splitCache) {
@@ -3031,12 +3038,12 @@ MM_Scavenger::scavengeRememberedSetList(MM_EnvironmentStandard *env)
 					/* evacuator does not split remembered arrays -- these are generally less dense and are scanned early in gc */
 					shouldBeRemembered = env->getEvacuator()->evacuateRememberedObject(objectPtr);
 				} else {
-					/* scavenger splits remembered arrays so rememered state not determined here so pass remembered set slot pointer */
+					/* scavenger splits remembered arrays and remembered state not determined here so pass remembered set slot pointer */
 					shouldBeRemembered = scavengeObjectSlots(env, NULL, objectPtr, GC_ObjectScanner::scanRoots, slotPtr);
-				}
 					/* split segments scanned later will clear deferred removal flag from remembered set slot */
-				if (_extensions->objectModel.hasIndirectObjectReferents((CLI_THREAD_TYPE*)env->getLanguageVMThread(), objectPtr)) {
-					shouldBeRemembered |= _delegate.scavengeIndirectObjectSlots(env, objectPtr);
+					if (_extensions->objectModel.hasIndirectObjectReferents((CLI_THREAD_TYPE*)env->getLanguageVMThread(), objectPtr)) {
+						shouldBeRemembered |= _delegate.scavengeIndirectObjectSlots(env, objectPtr);
+					}
 				}
 
 				shouldBeRemembered |= isRememberedThreadReference(env, objectPtr);

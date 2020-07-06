@@ -408,7 +408,7 @@ public:
 	/**
 	 * Reset scanspace activation count.
 	 */
-	void clearActivationCount() { _activations = 0; }
+	uintptr_t clearActivationCount() { uintptr_t activations = _activations; _activations = 0; return activations; }
 
 	void
 	assertScanspaceInvariant() const

@@ -145,11 +145,13 @@ public:
  * Function members
  */
 private:
+#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+	/* update evacuation history at end of a reporting epoch */
+	void reportProgress(MM_Evacuator *worker, uintptr_t baseScannedMetric, uintptr_t *sampledVolumeMetrics);
+#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+
 	/* calculate a rough overestimate of the amount of matter that will be evacuated to survivor or tenure in current cycle */
 	MMINLINE uintptr_t  calculateProjectedEvacuationBytes() const;
-
-	/* update evacuation history at end of a reporting epoch */
-	MMINLINE void reportProgress(MM_Evacuator *worker, uintptr_t baseScannedMetric, uintptr_t *sampledVolumeMetrics);
 
 	/* calculate whitespace allocation size considering evacuator's production scaling factor */
 	MMINLINE uintptr_t calculateOptimalWhitespaceSize(MM_Evacuator::Region region);
@@ -453,7 +455,28 @@ public:
 	 * @param currentVolumeMetrics evacuator volume metrics as of now
 	 * @return 0
 	 */
-	uintptr_t reportProgress(MM_Evacuator *worker,  uintptr_t *baseVolumeMetrics, uintptr_t *currentVolumeMetrics);
+	uintptr_t
+	reportProgress(MM_Evacuator *worker,  uintptr_t *baseVolumeMetrics, uintptr_t *currentVolumeMetrics)
+	{
+#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+		/* any or all of these counters may be updated while this thread is sampling them, but epoch boundaries are metered by scanned volume */
+		uintptr_t baseScannedMetric = _aggregateVolumeMetrics[MM_Evacuator::survivor_copy];
+		uintptr_t sampledVolumeMetrics[] = {
+			VM_AtomicSupport::add(&_aggregateVolumeMetrics[MM_Evacuator::survivor_copy], (currentVolumeMetrics[MM_Evacuator::survivor_copy] - baseVolumeMetrics[MM_Evacuator::survivor_copy])),
+			VM_AtomicSupport::add(&_aggregateVolumeMetrics[MM_Evacuator::tenure_copy], (currentVolumeMetrics[MM_Evacuator::tenure_copy] - baseVolumeMetrics[MM_Evacuator::tenure_copy])),
+			VM_AtomicSupport::add(&_aggregateVolumeMetrics[MM_Evacuator::scanned], (currentVolumeMetrics[MM_Evacuator::scanned] - baseVolumeMetrics[MM_Evacuator::scanned])),
+		};
+		reportProgress(worker, baseScannedMetric, sampledVolumeMetrics);
+#else
+		VM_AtomicSupport::add(&_aggregateVolumeMetrics[MM_Evacuator::survivor_copy], (currentVolumeMetrics[MM_Evacuator::survivor_copy] - baseVolumeMetrics[MM_Evacuator::survivor_copy]));
+		VM_AtomicSupport::add(&_aggregateVolumeMetrics[MM_Evacuator::tenure_copy], (currentVolumeMetrics[MM_Evacuator::tenure_copy] - baseVolumeMetrics[MM_Evacuator::tenure_copy]));
+		VM_AtomicSupport::add(&_aggregateVolumeMetrics[MM_Evacuator::scanned], (currentVolumeMetrics[MM_Evacuator::scanned] - baseVolumeMetrics[MM_Evacuator::scanned]));
+#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+		for (intptr_t metric = MM_Evacuator::survivor_copy; metric < MM_Evacuator::metrics; metric += 1) {
+			baseVolumeMetrics[metric] = currentVolumeMetrics[metric];
+		}
+		return 0;
+	}
 
 	/* allocate and NULL-fill evacuator pointer array (evacuators are instantiated at gc start as required) */
 	static MM_Evacuator**
