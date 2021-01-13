@@ -35,7 +35,6 @@ protected:
 	fomrobject_t *_basePtr; /**< pointer to base array element */
 	fomrobject_t *_limitPtr; /**< pointer to end of last array element */
 	fomrobject_t *_endPtr; /**< pointer to end of last array element in scan segment */
-	const uintptr_t _elementSize; /**> an array element size in bytes */
 
 public:
 
@@ -45,20 +44,15 @@ private:
 protected:
 
 	MMINLINE virtual fomrobject_t *
-	getNextSlotMap(uintptr_t *scanMap, bool *hasNextSlotMap)
-	{
-		Assert_MM_unreachable();
-		return NULL;
-	}
-
 #if defined(OMR_GC_LEAF_BITS)
-	MMINLINE virtual fomrobject_t *
 	getNextSlotMap(uintptr_t *scanMap, uintptr_t *leafMap, bool *hasNextSlotMap)
+#else
+	getNextSlotMap(uintptr_t *scanMap, bool *hasNextSlotMap)
+#endif /* OMR_GC_LEAF_BITS */
 	{
 		Assert_MM_unreachable();
 		return NULL;
 	}
-#endif /* OMR_GC_LEAF_BITS */
 
 public:
 	/**
@@ -80,20 +74,19 @@ public:
 		, fomrobject_t *scanPtr
 		, fomrobject_t *endPtr
 		, uintptr_t scanMap
-		, uintptr_t elementSize
 		, uintptr_t flags
 	)
+#if defined(OMR_GC_LEAF_BITS)
+		: GC_ObjectScanner(env, scanPtr, 0, scanMap, flags | GC_ObjectScanner::indexableObject)
+#else
 		: GC_ObjectScanner(env, scanPtr, scanMap, flags | GC_ObjectScanner::indexableObject)
+#endif /* defined(OMR_GC_LEAF_BITS) */
 		, _arrayPtr(arrayPtr)
 		, _basePtr(basePtr)
 		, _limitPtr(limitPtr)
 		, _endPtr(endPtr)
-		, _elementSize(elementSize)
 	{
 		_typeId = __FUNCTION__;
-		if (GC_SlotObject::subtractSlotAddresses(endPtr, scanPtr, env->compressObjectReferences()) <= _bitsPerScanMap) {
-			setNoMoreSlots();
-		}
 	}
 
 	/**
@@ -103,36 +96,32 @@ public:
 	MMINLINE void
 	initialize(MM_EnvironmentBase *env)
 	{
-		Assert_MM_true(_basePtr <= _scanPtr);
-		Assert_MM_true(_scanPtr <= _endPtr);
-		Assert_MM_true(_endPtr <= _limitPtr);
+		Debug_OS_true(_basePtr <= getScanPtr());
+		Debug_OS_true(getScanPtr() <= _endPtr);
+		Debug_OS_true(_endPtr <= _limitPtr);
 		GC_ObjectScanner::initialize(env);
 	}
 
 	/**
-	 * Get the current element of the array
-	 */
-	MMINLINE fomrobject_t *getScanPtr() { return _scanPtr; }
-
-	/**
 	 * Get the address of the next element in the array.
+	 * This is used in flattened contexts only -- should stride be dependent on slot compression?
+	 * @see GC_FlattenedArrayObjectScanner::getNextSlotMap()
 	 * @return NULL if there are no more elements
 	 */
 	MMINLINE fomrobject_t *
-	nextIndexableElement()
+	nextIndexableElement(uintptr_t stride)
 	{
-		fomrobject_t *result = NULL;
-		_scanPtr = (fomrobject_t*)((uintptr_t)_scanPtr + _elementSize);
-		if (_scanPtr < _endPtr) {
-			result =  _scanPtr;
+		fomrobject_t *result = GC_SlotObject::addToSlotAddress(getScanPtr(), (intptr_t)stride, compressObjectReferences());
+		if (result >= _endPtr) {
+			result =  NULL;
 		}
 		return result;
 	}
 
 	/**
-	 * Get the maximal index for the array. Array indices are assumed to be zero-based.
+	 * Get the maximal slot index for the array. Array indices are assumed to be zero-based.
 	 */
-	MMINLINE uintptr_t getIndexableRange() { return ((uintptr_t)_limitPtr - (uintptr_t)_basePtr) / _elementSize; }
+	MMINLINE uintptr_t getIndexableRange() { return ((uintptr_t)_limitPtr - (uintptr_t)_basePtr) / slotSizeInBytes(); }
 
 	/**
 	 * Reset truncated end pointer to force scanning to limit pointer (scan to end of indexable object). This

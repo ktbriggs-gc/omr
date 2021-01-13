@@ -49,7 +49,7 @@ public:
 private:
 	/* Inlined version of converting a pointer to a compressed token */
 	MMINLINE fomrobject_t
-	convertTokenFromPointer(omrobjectptr_t pointer)
+	convertTokenFromPointer(omrobjectptr_t pointer) const
 	{
 		uintptr_t value = (uintptr_t)pointer;
 #if defined (OMR_GC_COMPRESSED_POINTERS)
@@ -132,7 +132,7 @@ public:
 	 * Return back true if object references are compressed
 	 * @return true, if object references are compressed
 	 */
-	MMINLINE bool compressObjectReferences() {
+	MMINLINE bool compressObjectReferences() const {
 #if defined(OMR_GC_COMPRESSED_POINTERS)
 #if defined(OMR_GC_FULL_POINTERS)
 		return _compressObjectReferences;
@@ -148,7 +148,7 @@ public:
 	 * Read reference from slot
 	 * @return address of object slot reference to.
 	 */
-	MMINLINE omrobjectptr_t readReferenceFromSlot()
+	MMINLINE omrobjectptr_t readReferenceFromSlot() const
 	{
 		omrobjectptr_t value = NULL;
 #if defined (OMR_GC_COMPRESSED_POINTERS)
@@ -167,7 +167,7 @@ public:
 	 * Created for compatibility with existing code
 	 * @return slot address
 	 */
-	MMINLINE fomrobject_t* readAddressFromSlot()
+	MMINLINE fomrobject_t* readAddressFromSlot() const
 	{
 		return (fomrobject_t*)_slot;
 	}
@@ -176,7 +176,7 @@ public:
 	 * Write reference to slot if it was changed only.
 	 * @param reference address of object should be written to slot
 	 */
-	MMINLINE void writeReferenceToSlot(omrobjectptr_t reference)
+	MMINLINE void writeReferenceToSlot(omrobjectptr_t reference) const
 	{
 #if defined (OMR_GC_COMPRESSED_POINTERS)
 		if (compressObjectReferences()) {
@@ -193,7 +193,7 @@ public:
 	 * might have raced us and put a more up to date value.
 	 * @return true if write succeeded
 	 */ 	
-	MMINLINE bool atomicWriteReferenceToSlot(omrobjectptr_t oldReference, omrobjectptr_t newReference)
+	MMINLINE bool atomicWriteReferenceToSlot(omrobjectptr_t oldReference, omrobjectptr_t newReference) const
 	{
 		/* Caller should ensure oldReference != newReference */
 		uintptr_t oldValue = (uintptr_t)oldReference;

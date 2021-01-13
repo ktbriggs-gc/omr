@@ -35,17 +35,12 @@
 void
 MM_EvacuatorParallelTask::run(MM_EnvironmentBase *envBase)
 {
-	/* bind the worker thread (env) to an evacuator instance and set up the evacuator for a new gc cycle */
 	MM_EnvironmentStandard *env = MM_EnvironmentStandard::getEnvironment(envBase);
-	MM_Evacuator *evacuator = _controller->bindWorker(env);
 
-	Assert_MM_true(evacuator->getWorkerIndex() < _controller->getEvacuatorThreadCount());
-	Assert_MM_true(env == evacuator->getEnvironment());
+	/* bind the worker thread (env) to an evacuator instance and send the bound evacuator off to work ... */
+	_controller->bindWorker(env)->workThreadGarbageCollect(env);
 
-	/* send the bound evacuator off to work ... */
-	evacuator->workThreadGarbageCollect(env);
-
-	/* controller will release evacuator binding and evacuator will passivate */
+	/* release evacuator binding and passivate evacuator instance */
 	_controller->unbindWorker(env);
 }
 
@@ -72,77 +67,83 @@ MM_EvacuatorParallelTask::cleanup(MM_EnvironmentBase *envBase)
 	}
 }
 
-#if defined(J9MODRON_TGC_PARALLEL_STATISTICS) || defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+void
+MM_EvacuatorParallelTask::complete(MM_EnvironmentBase *envBase)
+{
+	MM_ParallelTask::complete(envBase);
+	MM_EnvironmentStandard *env = MM_EnvironmentStandard::getEnvironment(envBase);
+	if (env->isMasterThread()) {
+		_controller->aggregateEvacuatorMetrics(env);
+	}
+}
+
+#if defined(J9MODRON_TGC_PARALLEL_STATISTICS)
 void
 MM_EvacuatorParallelTask::synchronizeGCThreads(MM_EnvironmentBase *envBase, const char *id)
 {
-	MM_EnvironmentStandard *env = MM_EnvironmentStandard::getEnvironment(envBase);
-
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-	_controller->waitToSynchronize(env->getEvacuator(), id);
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
-
 	OMRPORT_ACCESS_FROM_OMRPORT(envBase->getPortLibrary());
 	uint64_t startTime = omrtime_hires_clock();
 
-	MM_ParallelTask::synchronizeGCThreads(env, id);
+	MM_ParallelTask::synchronizeGCThreads(envBase, id);
 
-	uint64_t endTime = omrtime_hires_clock();
-	env->_scavengerStats.addToSyncStallTime(startTime, endTime);
-
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-	_controller->continueAfterSynchronizing(env->getEvacuator(), startTime, endTime, id);
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+	MM_EnvironmentStandard *env = MM_EnvironmentStandard::getEnvironment(envBase);
+	env->getMetrics()->_threadMetrics[MM_Evacuator::sync_ms] += (omrtime_hires_clock() - startTime);
+	env->getMetrics()->_threadMetrics[MM_Evacuator::sync_count] += 1;
 }
 
 bool
 MM_EvacuatorParallelTask::synchronizeGCThreadsAndReleaseMaster(MM_EnvironmentBase *envBase, const char *id)
 {
-	MM_EnvironmentStandard *env = MM_EnvironmentStandard::getEnvironment(envBase);
-
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-	_controller->waitToSynchronize(env->getEvacuator(), id);
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
-
 	OMRPORT_ACCESS_FROM_OMRPORT(envBase->getPortLibrary());
 	uint64_t startTime = omrtime_hires_clock();
 
-	bool result = MM_ParallelTask::synchronizeGCThreadsAndReleaseMaster(env, id);
+	bool isMasterThread = false;
 
-	uint64_t endTime = omrtime_hires_clock();
-	env->_scavengerStats.addToSyncStallTime(startTime, endTime);
+	if (MM_ParallelTask::synchronizeGCThreadsAndReleaseMaster(envBase, id)) {
+		Debug_MM_true(!isMasterThread || (0 == *(_controller->sampleStalledMap())));
+		Debug_MM_true(!isMasterThread || (0 == *(_controller->sampleResumingMap())));
+		Debug_MM_true(!isMasterThread || (!_controller->areAnyEvacuatorsStalled()));
+		isMasterThread = true;
+	}
+	MM_EnvironmentStandard *env = MM_EnvironmentStandard::getEnvironment(envBase);
+	env->getMetrics()->_threadMetrics[MM_Evacuator::sync_ms] += (omrtime_hires_clock() - startTime);
+	env->getMetrics()->_threadMetrics[MM_Evacuator::sync_count] += 1;
 
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-	_controller->continueAfterSynchronizing(env->getEvacuator(), startTime, endTime, id);
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
-
-	return result;
+	return isMasterThread;
 }
 
 bool
 MM_EvacuatorParallelTask::synchronizeGCThreadsAndReleaseSingleThread(MM_EnvironmentBase *envBase, const char *id)
 {
-	MM_EnvironmentStandard *env = MM_EnvironmentStandard::getEnvironment(envBase);
-
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-	_controller->waitToSynchronize(env->getEvacuator(), id);
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
-
 	OMRPORT_ACCESS_FROM_OMRPORT(envBase->getPortLibrary());
 	uint64_t startTime = omrtime_hires_clock();
 
-	bool result = MM_ParallelTask::synchronizeGCThreadsAndReleaseSingleThread(env, id);
+	bool isReleasedThread = false;
 
-	uint64_t endTime = omrtime_hires_clock();
-	env->_scavengerStats.addToSyncStallTime(startTime, endTime);
+	if (MM_ParallelTask::synchronizeGCThreadsAndReleaseSingleThread(envBase, id)) {
+		Debug_MM_true(!isReleasedThread || (0 == *(_controller->sampleStalledMap())));
+		Debug_MM_true(!isReleasedThread || (0 == *(_controller->sampleResumingMap())));
+		Debug_MM_true(!isReleasedThread || (!_controller->areAnyEvacuatorsStalled()));
+		isReleasedThread = true;
+	}
+	MM_EnvironmentStandard *env = MM_EnvironmentStandard::getEnvironment(envBase);
+	env->getMetrics()->_threadMetrics[MM_Evacuator::sync_ms] += (omrtime_hires_clock() - startTime);
+	env->getMetrics()->_threadMetrics[MM_Evacuator::sync_count] += 1;
 
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-	_controller->continueAfterSynchronizing(env->getEvacuator(), startTime, endTime, id);
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
-
-	return result;
+	return isReleasedThread;
 }
 
-#endif /* defined(J9MODRON_TGC_PARALLEL_STATISTICS) || defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+void
+MM_EvacuatorParallelTask::releaseSynchronizedGCThreads(MM_EnvironmentBase *envBase)
+{
+	Debug_MM_true(0 == *(_controller->sampleStalledMap()));
+	Debug_MM_true(0 == *(_controller->sampleResumingMap()));
+	Debug_MM_true(!_controller->areAnyEvacuatorsStalled());
+
+	MM_ParallelTask::releaseSynchronizedGCThreads(envBase);
+}
+#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+#endif /* J9MODRON_TGC_PARALLEL_STATISTICS */
 
 #endif /* defined(OMR_GC_MODRON_SCAVENGER) */

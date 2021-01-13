@@ -298,7 +298,7 @@ MM_MarkingScheme::scanObject(MM_EnvironmentBase *env, omrobjectptr_t objectPtr)
 	GC_ObjectScanner *objectScanner = _delegate.getObjectScanner(env, objectPtr, &objectScannerState, SCAN_REASON_PACKET, &sizeToDo);
 	if (NULL != objectScanner) {
 		bool isLeafSlot = false;
-		GC_SlotObject *slotObject;
+		const GC_SlotObject *slotObject;
 #if defined(OMR_GC_LEAF_BITS)
 		while (NULL != (slotObject = objectScanner->getNextSlot(&isLeafSlot))) {
 #else /* OMR_GC_LEAF_BITS */
@@ -411,7 +411,7 @@ MM_MarkingScheme::createWorkPackets(MM_EnvironmentBase *env)
 }
 
 void
-MM_MarkingScheme::fixupForwardedSlotOutline(GC_SlotObject *slotObject) {
+MM_MarkingScheme::fixupForwardedSlotOutline(const GC_SlotObject *slotObject) {
 #if defined(OMR_GC_CONCURRENT_SCAVENGER)
 	bool const compressed = _extensions->compressObjectReferences();
 	if (_extensions->getGlobalCollector()->isStwCollectionInProgress()) {

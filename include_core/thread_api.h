@@ -59,6 +59,12 @@ typedef struct omrthread_process_time_t {
 	int64_t _userTime;
 } omrthread_process_time_t;
 
+typedef struct omrthread_process_stats_t {
+	omrthread_process_time_t _times;
+	intptr_t _switched;	/* involuntary context switches (eg, time-sliced) */
+	intptr_t _yielded;	/* voluntary context switches (eg monitor enter/wait */
+} omrthread_process_stats_t;
+
 typedef struct omrthread_state_t {
 	uintptr_t flags;
 	omrthread_monitor_t blocker;
@@ -1191,11 +1197,20 @@ omrthread_get_self_user_time(omrthread_t self);
 
 /**
 * @brief
-* @param Pointer to processTime struct
+* @param processTime Pointer to omrthread_process_time_t struct
 * @return intptr_t
 */
 intptr_t
 omrthread_get_process_times(omrthread_process_time_t *processTime);
+
+/**
+* @brief
+* @param processTime Pointer to omrthread_process_time_t struct
+* @param processStats Pointer to omrthread_process_stats_t struct
+* @return intptr_t
+*/
+intptr_t
+omrthread_get_process_stats(omrthread_process_time_t *processTime, omrthread_process_stats_t *processStats);
 
 /**
 * @brief

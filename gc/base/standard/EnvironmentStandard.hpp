@@ -32,8 +32,10 @@
 #include "j9nongenerated.h"
 #include "omrport.h"
 #include "modronopt.h"
+#include "ModronAssertions.h"
 
 #include "EnvironmentBase.hpp"
+#include "EvacuatorBase.hpp"
 #include "GCExtensionsBase.hpp"
 #include "SublistFragment.hpp"
 
@@ -72,6 +74,7 @@ protected:
 
 private:
 	MM_Evacuator *_evacuator;
+	MM_EvacuatorBase::Metrics *_metrics;
 	
 /* Functionality Section */
 public:
@@ -83,7 +86,8 @@ public:
 	MMINLINE static MM_EnvironmentStandard *getEnvironment(OMR_VMThread *omrVMThread) { return static_cast<MM_EnvironmentStandard*>(omrVMThread->_gcOmrVMThreadExtensions); }
 	MMINLINE static MM_EnvironmentStandard *getEnvironment(MM_EnvironmentBase *env) { return static_cast<MM_EnvironmentStandard*>(env); }
 
-	MMINLINE void setEvacuator(MM_Evacuator *evacuator) { _evacuator = evacuator; }
+	MMINLINE void setEvacuator(MM_Evacuator *evacuator, MM_EvacuatorBase::Metrics *metrics) { _evacuator = evacuator; _metrics = metrics; }
+	MMINLINE MM_EvacuatorBase::Metrics *getMetrics() { return _metrics; }
 	MMINLINE MM_Evacuator *getEvacuator() { return _evacuator; }
 
 	MM_EnvironmentStandard(OMR_VMThread *omrVMThread) :
@@ -104,6 +108,7 @@ public:
 		,_survivorTLHRemainderBase(NULL)
 		,_survivorTLHRemainderTop(NULL)
 		,_evacuator(NULL)
+		,_metrics(NULL)
 	{
 		_typeId = __FUNCTION__;
 	}

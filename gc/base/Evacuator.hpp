@@ -29,14 +29,11 @@
 #include "omrthread.h"
 
 #include "EvacuatorBase.hpp"
-#include "EvacuatorCopyspace.hpp"
 #include "EvacuatorDelegate.hpp"
 #include "EvacuatorWorklist.hpp"
-#include "EvacuatorScanspace.hpp"
 #include "EvacuatorWhitelist.hpp"
 #include "ForwardedHeader.hpp"
-#include "GCExtensionsBase.hpp"
-#include "ObjectModel.hpp"
+#include "ObjectScanner.hpp"
 #include "ParallelTask.hpp"
 #include "SlotObject.hpp"
 
@@ -50,45 +47,82 @@ class MM_Evacuator : public MM_EvacuatorBase
  * Data members
  */
 private:
-	/* at least 3 stack frames are required -- bottom frame and a parking frame per region to hold whitespace when bottom frame is cleared */
-	MM_EvacuatorController * const _controller;		/* controller provides collective services and instrumentation */
-	MM_EvacuatorDelegate _delegate;					/* implements methods the evacuator delegates to the language/runtime */
-	GC_ObjectModel * const _objectModel;			/* object model for language */
-	MM_Forge * const _forge;						/* system memory allocator */
-	const uintptr_t _maxStackDepth;					/* number of frames to use for scanning (1 implies breadth-first operation) */
-	const uintptr_t _maxInsideCopyDistance;			/* limit on distance from scan to copy head for copying inside stack frames */
-	const uintptr_t _maxInsideCopySize;				/* limit on size of object that can be copied inside stack frames */
-	uintptr_t _baseReportingVolumeDelta;			/* cumulative volume copied|scanned since last reporting volume metrics to controller */
-	uintptr_t _volumeMetrics[metrics];				/* cumulative numbers of bytes copied out of evacuation semispace and scanned in survivor or tenure space */
-	uintptr_t _baseMetrics[metrics];				/* volume metrics as of most recent report (or all 0s if not yet reported) */
-	uintptr_t _volumeReportingThreshold;			/* upper bound for base volume delta (report when base volume delta exceeds threshold) */
-	uintptr_t _workspaceReleaseThreshold;			/* threshold for releasing accumulated workspace from outside copyspaces */
-	uintptr_t _tenureMask;							/* used to determine age threshold for tenuring evacuated objects */
-	MM_ScavengerStats *_stats;						/* pointer to MM_EnvironmentBase::_scavengerStats */
+	/* space for _object scanner variant instantiation */
+	typedef MM_EvacuatorDelegate::ScannerState Scanner;
 
-	const MM_EvacuatorScanspace * _stackLimit;		/* operational limit is set to ceiling for full stack scanning or bottom to force flushing to outside copyspaces */
-	MM_EvacuatorScanspace * const _stackBottom;		/* bottom (location) of scan stack */
-	const MM_EvacuatorScanspace * const _stackTop;	/* physical limit determines number of frames allocated for scan stack */
-	const MM_EvacuatorScanspace * const _stackCeiling;	/* normative limit determines maximal depth of scan stack (may be below top) */
-	MM_EvacuatorScanspace * _scanStackFrame;		/* points to active stack frame, NULL if scan stack empty */
-	MM_EvacuatorScanspace * _whiteStackFrame[2];	/* pointers to stack frames that hold reserved survivor/tenure inside whitespace */
+	/* scan stack frame -- workspaces are always pulled into bottom stack frames, and split array segments are never pushed from an inferior frame */
+	typedef struct ScanSpace {
+		uint8_t *_base;			/* base points to first object contained in frame (or array object if pulled from split array workspace) */
+		union {
+			omrobjectptr_t _object;	/* pointer to object is automorphic with scan head, advancing in mixed (pulled) and pushed frames */
+			uint8_t *_scan;			/* scan head always points to array object while scanning in frames pulled from split array workspaces */
+		};
+		uint8_t *_end;			/* frame is popped when _scan advances to _end (*_end is void) */
+		uintptr_t _flags;		/* ScanFlags */
+		Scanner _scanner; 		/* object scanner instance for _object at _scan (GC_LeafObjectScanner if isNull flag set) */
+	} StackFrame;
 
-	MM_EvacuatorCopyspace * const _copyspace;		/* pointers to survivor/tenure outside copyspaces that receive outside copy */
-	MM_EvacuatorWhitelist * const _whiteList;		/* pointers to survivor/tenure whitelists of whitespace fragments */
+	/* scanspace flags */
+	typedef enum ScanFlags {
+		  scanTenure = tenure	/* scanning tenure copy (otherwise scanning survivor copy) */
+		, isRemembered = 2		/* remembered state of object at scan head */
+		, isPulled = 4			/* workspace was pulled from worklist (workspaces are pulled bottom up and have closed endpoints)*/
+		, isSplitArray = 8		/* pulled split array workspace */
+		, isNull = 16			/* marks the static empty frame in _nil that is used to obviate NULL checks on _sp, _rp */
+	} ScanFlags;
 
-	MM_EvacuatorCopyspace _largeCopyspace;			/* copyspace for large objects (solo object allocation and distribution as workspace) */
-	MM_EvacuatorFreelist _freeList;					/* LIFO queue of empty workspaces */
-	MM_EvacuatorWorklist _workList;					/* FIFO queue of distributable survivor/tenure workspaces */
-	omrthread_monitor_t	_mutex;						/* controls access to evacuator worklist */
+	/* copy spaces hold copied material pending scan */
+	typedef struct CopySpace {
+		uint8_t *_base;			/* base address of scan work laid down by copy since last rebase or whitespace if just refreshed */
+		uint8_t *_copy;			/* copy head points to where next object will be copied (*_copy is whitespace unless void ) */
+		uint8_t *_end;			/* end marks the end of remaining whitespace (*_end is void) */
+		uintptr_t _flags;		/* CopyFlags */
+	} CopySpace;
 
-	uintptr_t _copyspaceOverflow[2];				/* volume of copy overflowing outside copyspaces, reset when outside copyspace is refreshed */
+	/* copyspace flags */
+	typedef enum CopyFlags {
+		  copyTenure = tenure	/* holds copy in tenure space (otherwise holds survivor copy) */
+		, isLOA = 2				/* set if whitespace allocated from LOA */
+		, isLeaves = 4			/* set if copyspace holds only leaf objects */
+	} CopyFlags;
 
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-	uintptr_t * const _activationCounts;			/* histogram counters for stack frame activation, indexed by stack frame */
-	uintptr_t _conditionCounts[conditions_mask + 1];/* histogram counters for condition flags, indexed by 8-bit pattern of flags */
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+	/* enumeration of _copyspace[] array indices (inside/outside survivor/tenure and overflow copyspaces) */
+	typedef enum CopySpaces {
+		  insideSurvivor = survivor			/* [0] holds small objects copied inside survivor stack frames */
+		, insideTenure = tenure				/* [1] holds small objects copied inside tenure stack frames */
+		, outsideSurvivor = 2 + survivor	/* [2] holds larger objects copied to outside survivor copyspace */
+		, outsideTenure = 2 + tenure		/* [3] holds larger objects copied to outside tenure copyspace */
+		, overflow = 4						/* [4] holds objects that overflow inside and outside copyspaces */
+		, copyspaces = 5					/* (5) number of copyspaces in _copyspace[] array */
+	} CopySpaces;
 
-	bool _abortedCycle;								/* set when work is aborted by any evacuator task */
+	MM_EvacuatorController * const _controller;	/* controller provides collective services and instrumentation */
+	const uintptr_t _maxStackDepth;				/* number of frames to use for scanning (1 implies breadth-first operation) */
+	const uintptr_t _maxInsideCopyDistance;		/* limit on distance from scan to copy head for copying inside stack frames */
+	const uintptr_t _minInsideCopySize;			/* limit on size of object that can be copied inside stack frames */
+	const uintptr_t _maxInsideCopySize;			/* limit on size of object that can be copied inside stack frames */
+	uintptr_t _workReleaseThreshold;			/* limit for accumulation in outside copyspaces of unscanned copy to worklist */
+	uintptr_t _conditionFlags;					/* bitmap of current evacuator operating conditions (including scan options) */
+	uintptr_t _insideDistanceMax;				/* effective distance limit may be throttled for some conditions */
+	uintptr_t _insideSizeMax;					/* effective size limit may be throttled for some conditions */
+	const GC_SlotObject *_slot;					/* pointer to most recently scanned slot (holding reference to evacuation candidate) */
+	ScanSpace * const _stack;					/* points to array of scan stack frames */
+	ScanSpace * const _nil;						/* points to (nil) last frame in scan stack array (holds const empty frame to obviate NULL checks on _sp) */
+	ScanSpace * _sp;							/* points to topmost active stack frame */
+	ScanSpace * _rp[sources];					/* point to (may be nil) stack frames scanning inside copyspace per source region (survivor/tenure) */
+	uintptr_t _tenureMask;						/* used to determine age threshold for tenuring evacuated objects */
+	MM_ScavengerStats *_stats;					/* pointer to MM_EnvironmentBase::_scavengerStats */
+	MM_EvacuatorDelegate _delegate;				/* implements methods the evacuator delegates to the language/runtime */
+
+	MM_EvacuatorWorklist _workList;				/* FIFO queue of distributable survivor/tenure workspaces */
+	MM_EvacuatorFreelist _freeList;				/* LIFO queue of empty workspaces */
+	MM_EvacuatorWhitelist * const _whiteList;	/* array of survivor/tenure whitelists of whitespace fragments */
+
+	uintptr_t _copyspaceOverflow[sources];		/* volume of copy overflowing outside copyspaces, reset when outside copyspace is refreshed */
+	CopySpace _copyspace[copyspaces];			/* array of survivor/tenure inside/outside and large copyspaces */
+	omrthread_monitor_t	_mutex;					/* controls access to evacuator worklist */
+	bool _abortedCycle;							/* set when work is aborted by any evacuator task */
+
 protected:
 public:
 
@@ -96,6 +130,23 @@ public:
  * Function members
  */
 private:
+	static ScanSpace *
+	newStackFrameArray(MM_Forge *forge, uintptr_t count)
+	{
+		uintptr_t stackSize = sizeof(ScanSpace) * count;
+		ScanSpace *stack = (ScanSpace *)forge->allocate(stackSize, OMR::GC::AllocationCategory::FIXED, OMR_GET_CALLSITE());
+		if (NULL != stack) {
+			memset(stack, 0, stackSize);
+		}
+		return stack;
+	}
+
+	/**
+	 * controller sets initial bounds and may update during gc if MM_Collector::collectorExpanded() is
+	 * called when an allocation fails and there is headroom in the heap to expand tenure.
+	 */
+	void setHeapBounds(volatile uint8_t *heapBounds[][2]);
+
 	/* evacuation workflow: evacuate -> survivor | tenure */
 	void scanRoots();
 	void scanRemembered();
@@ -103,54 +154,58 @@ private:
 	bool scanClearable();
 	void scanComplete();
 
-	/* scan workflow (huff): (copyspace | worklist:workspace* ) -> stack:scanspace* */
+	/* scan workflow: pull and scan work from worklist|copyspace to find referents in the evacuation region */
+	void scan();
+	MMINLINE bool next();
+	MMINLINE void pull(MM_EvacuatorWorklist *worklist);
+	MMINLINE void pull(CopySpace *copyspace);
+	MMINLINE void pull(ScanSpace *sp, Region region, const Workspace *workspace);
+	MMINLINE void push(ScanSpace *sp, Region region, uint8_t *copyhead, uint8_t *copyend);
+	MMINLINE bool pop();
+	MMINLINE GC_ObjectScanner *scanner(const ScanSpace *stackframe) const;
+	MMINLINE Region source(const ScanSpace *stackframe) const;
+	MMINLINE bool pulled(const ScanSpace *stackframe) const;
+	MMINLINE bool nil(const ScanSpace *stackframe) const;
+	MMINLINE void reset(ScanSpace *stackframe) const;
+
+	/* copy workflow: copy referents in evacuation region into whitespace in survivor/tenure copyspaces, filling copyspaces with scan work */
+	omrobjectptr_t copy(MM_ForwardedHeader *forwardedHeader);
+	MMINLINE bool cached(const uint8_t *copyhead) const;
+	MMINLINE CopySpace *selectCopyspace(Region *selected, uintptr_t sizeAfterCopy, const bool isLeaf);
+	MMINLINE omrobjectptr_t copyForward(MM_ForwardedHeader *forwardedHeader, CopySpace *copyspace, const uintptr_t sizeBeforeCopy, const uintptr_t sizeAfterCopy);
+	MMINLINE void flushOverflow(Region selected = unreachable);
+	MMINLINE uint8_t *rebase(CopySpace *copyspace, uintptr_t *volume);
+	MMINLINE bool whitesize(CopySpace *copyspace, uintptr_t size);
+	MMINLINE uintptr_t whiteFlags(bool isLoa);
+	bool refresh(CopySpace *copyspace, Region region, uintptr_t size, bool isLeaf);
+	MMINLINE Whitespace *trim(CopySpace *copyspace);
+	MMINLINE void reset(CopySpace *copyspace) const;
+	MMINLINE Region source(const CopySpace *copyspace) const;
+	MMINLINE CopySpaces index(const CopySpace *copyspace) const;
+	MMINLINE CopySpace *inside(Region region);
+	MMINLINE CopySpace *outside(Region region);
+
+	/* workspace workflow: rebase copyspaces to extract scan work to worklist to be pulled into stack for scanning */
 	MMINLINE bool getWork();
 	MMINLINE void findWork();
-
-	MMINLINE void pull(MM_EvacuatorWorklist *worklist);
-	MMINLINE void pull(MM_EvacuatorCopyspace *copyspace);
-
-	void scan();
-	MMINLINE void copy();
-	MMINLINE MM_EvacuatorScanspace *next(Region region, MM_EvacuatorScanspace *proposed);
-	MMINLINE void push(MM_EvacuatorScanspace *nextFrame);
-	MMINLINE void pop();
-	MMINLINE GC_ObjectScanner *scanner(const bool advanceScanHead);
-	MMINLINE void chain(omrobjectptr_t linkedObject, const uintptr_t selfReferencingSlotOffset, const uintptr_t worklistVolumeCeiling);
-	MMINLINE bool isTop(const MM_EvacuatorScanspace *stackframe);
-	MMINLINE MM_EvacuatorScanspace *top(intptr_t offset = 0);
-
-	MMINLINE bool reserveInsideScanspace(const Region region, const uintptr_t slotObjectSizeAfterCopy, MM_EvacuatorScanspace **localWhiteFrame);
-	MMINLINE omrobjectptr_t copyForward(MM_ForwardedHeader *forwardedHeader, fomrobject_t *referringSlotAddress, MM_EvacuatorCopyspace * const copyspace, const uintptr_t originalLength, const uintptr_t forwardedLength);
-
-	omrobjectptr_t copyOutside(Region region, MM_ForwardedHeader *forwardedHeader, fomrobject_t *referringSlotAddress, const uintptr_t slotObjectSizeBeforeCopy, const uintptr_t slotObjectSizeAfterCopy);
-	MMINLINE MM_EvacuatorCopyspace *reserveOutsideCopyspace(Region *region, const uintptr_t slotObjectSizeAfterCopy, bool useLargeCopyspace);
-	MMINLINE bool shouldRefreshCopyspace(const Region region, const uintptr_t slotObjectSizeAfterCopy, const uintptr_t copyspaceRemainder) const;
-
-	/* copy workflow (puff): stack:scanspace* -> copyspace -> worklist:workspace* */
-	bool flushInactiveFrames();
-	bool flushOutsideCopyspaces();
-	void splitPointerArrayWork(MM_EvacuatorCopyspace *copyspace);
-	MMINLINE bool isSplitArrayWorkspace(const MM_EvacuatorWorkspace *work) const;
-	MMINLINE void addWork(MM_EvacuatorWorkspace *workspace, bool defer = false);
-	MMINLINE void addWork(MM_EvacuatorCopyspace *copyspace);
-	MMINLINE uintptr_t adjustWorkReleaseThreshold();
+	MMINLINE void addWork(CopySpace *copyspace);
+	void splitPointerArrayWork(CopySpace *copyspace, uint8_t *arrayAddress);
+	MMINLINE bool isSplitArrayWorkspace(const Workspace *work) const;
 	MMINLINE void flushForWaitState();
-	MMINLINE void gotWork();
 
 	/* workflow conditions regulate switching copy between inside/outside scan/copyspaces, inside copy distance, workspace release threshold, ... */
 	MMINLINE bool selectCondition(ConditionFlag condition, bool force = false);
 	MMINLINE void setCondition(ConditionFlag condition, bool value);
+	MMINLINE bool areConditionsSet(uintptr_t conditionFlags) const;
+	MMINLINE bool isConditionSet(uintptr_t conditionFlags) const;
 	MMINLINE ConditionFlag copyspaceTailFillCondition(Region region) const;
 	MMINLINE bool isForceOutsideCopyCondition(Region region) const;
-	MMINLINE bool isForceOutsideCopyCondition() const;
 	MMINLINE bool isDistributeWorkCondition() const;
 	MMINLINE bool isBreadthFirstCondition() const;
 
 	/* object geometry */
 	MMINLINE bool isSplitablePointerArray(omrobjectptr_t object, uintptr_t objectSizeInBytes);
 	MMINLINE bool isLargeObject(const uintptr_t objectSizeInBytes) const;
-	MMINLINE bool isHugeObject(const uintptr_t objectSizeInBytes) const;
 
 	/* object age */
 	MMINLINE void flushRememberedSet();
@@ -161,19 +216,13 @@ private:
 	MMINLINE void setAbortedCycle();
 	MMINLINE bool isAbortedCycle();
 
-
-#if defined(J9MODRON_TGC_PARALLEL_STATISTICS) || defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 #if defined(EVACUATOR_DEBUG)
-	MMINLINE void debugStack(const char *stackOp, bool treatAsWork = false);
+	void walk(const Workspace *workspace);
 #endif /* defined(EVACUATOR_DEBUG) */
-	MMINLINE uint64_t startWaitTimer(const char *tag);
-	MMINLINE void endWaitTimer(uint64_t waitStartTime);
-	MMINLINE uint64_t cycleMicros() { OMRPORT_ACCESS_FROM_ENVIRONMENT(_env); return omrtime_hires_delta(_env->getExtensions()->incrementScavengerStats._startTime, omrtime_hires_clock(), OMRPORT_TIME_DELTA_IN_MICROSECONDS); }
-#endif /* defined(J9MODRON_TGC_PARALLEL_STATISTICS) || defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
 protected:
+
 public:
-	virtual UDATA getVMStateID() { return OMRVMSTATE_GC_EVACUATOR; }
 
 	/**
 	 * Instantiate evacuator.
@@ -183,7 +232,7 @@ public:
 	 * @param extensions gc extensions (base)
 	 * @return an evacuator instance
 	 */
-	static MM_Evacuator *newInstance(uintptr_t workerIndex, MM_EvacuatorController *controller, MM_GCExtensionsBase *extensions, uint8_t *regionBase[2]);
+	static MM_Evacuator *newInstance(uintptr_t workerIndex, MM_EvacuatorController *controller, MM_GCExtensionsBase *extensions);
 
 	/**
 	 * Terminate and deallocate evacuator instance
@@ -205,10 +254,8 @@ public:
 	 *
 	 * @param[in] env worker thread environment to bind to
 	 * @param[in] tenureMask a copy of the controller's tenure mask for the cycle
-	 * @param[in] heapBounds address bounds for heap regions survivor, tenure, evacuate
-	 * @param[in] copiedBytesReportingDelta the number of scanned/copied bytes to process between reporting scan/copy counts to controller
 	 */
-	void bindWorkerThread(MM_EnvironmentStandard *env, uintptr_t tenureMask, uint8_t *heapBounds[][2], uintptr_t copiedBytesReportingDelta);
+	void bindWorkerThread(MM_EnvironmentStandard *env, uintptr_t tenureMask);
 
 	/**
 	 * Per gc, unbind evacuator instance from worker thread, merge evacuator gc stats
@@ -225,9 +272,9 @@ public:
 	/**
 	 * Work status
 	 */
-	bool hasScanWork() const { return (NULL != _scanStackFrame); }
-	uintptr_t getVolumeOfWork() { return _workList.volume(); }
-	uintptr_t getDistributableVolumeOfWork(uintptr_t workReleaseThreshold);
+	bool hasScanWork() const { return _nil != _sp; }
+	uintptr_t getVolumeOfWork() const { return _workList.volume(); }
+	uintptr_t getDistributableVolumeOfWork() const ;
 
 	/**
 	 * Main evacuation method driven by all gc slave threads during a nursery collection:
@@ -258,7 +305,7 @@ public:
 	 * 	(evacuateRootObject* evacuateHeap)
 	 *
 	 * The evacuateHeap method is provided for this context only and its use is deprecated. Evacuator
-	 * is designed to deal with a stream of pointers to root objects presented via evacuateRootObject
+	 * expects to deal with a stream of pointers to root objects presented via evacuateRootObject
 	 * in the delegate's scanClearable implementation. When scanClearable completes, the evacuator
 	 * will recursively scan the objects depending from the roots presented in scanClearable.
 	 *
@@ -275,7 +322,7 @@ public:
 	 * @param breadthFirst copy object without recursing into dependent referents
 	 * @return true if the root object was copied to new space (not tenured), false otherwise
 	 */
-	bool
+	omrobjectptr_t
 	evacuateRootObject(volatile omrobjectptr_t *slotPtr, bool breadthFirst = false)
 	{
 		omrobjectptr_t object = *slotPtr;
@@ -287,7 +334,7 @@ public:
 			*slotPtr = object;
 		}
 		/* failure to evacuate must be reported as object in survivor space to maintain remembered set integrity */
-		return isInSurvivor(object) || isInEvacuate(object);
+		return object;
 	}
 
 	/**
@@ -295,10 +342,10 @@ public:
 	 *
 	 * @param slotObject pointer to slot object encapsulating address of referring slot
 	 * @param breadthFirst copy object without recursing into dependent referents
-	 * @return true if the root object was copied to new space (not tenured), false otherwise
+	 * @return the forwarded address, or the original address if evacuation failed
 	 */
-	bool
-	evacuateRootObject(GC_SlotObject* slotObject, bool breadthFirst = false)
+	omrobjectptr_t
+	evacuateRootObject(const GC_SlotObject *slotObject, bool breadthFirst = false)
 	{
 		omrobjectptr_t object = slotObject->readReferenceFromSlot();
 		if (isInEvacuate(object)) {
@@ -308,8 +355,8 @@ public:
 			Debug_MM_true(NULL != object);
 			slotObject->writeReferenceToSlot(object);
 		}
-		/* failure to evacuate must be reported as object in survivor space to maintain remembered set integrity */
-		return isInSurvivor(object) || isInEvacuate(object);
+		/* failure to evacuate must be reported as object in nursery space to maintain remembered set integrity */
+		return object;
 	}
 
 	/**
@@ -370,52 +417,12 @@ public:
 	 * Controller calls this when it allocates a TLH from survivor or tenure region that is too small to hold
 	 * the current object. The evacuator adds the unused TLH to the whitelist for the containing region.
 	 */
-	void receiveWhitespace(Region region, MM_EvacuatorWhitespace *whitespace);
+	void receiveWhitespace(Region region, Whitespace *whitespace);
 
 	/**
 	 * Controller calls this to force evacuator to flush unused whitespace from survivor or tenure whitelist.
 	 */
 	void flushWhitespace(Region region);
-
-	/**
-	 * Get the number of allocated bytes discarded during the gc cycle (micro-fragmentation).
-	 */
-	uintptr_t getDiscarded()
-	{
-		return _whiteList[survivor].getDiscarded() + _whiteList[tenure].getDiscarded();
-	}
-
-	/**
-	 * Get the number of allocated bytes flushed at the end of the gc cycle (macro-fragmentation).
-	 */
-	uintptr_t getFlushed() { return _whiteList[survivor].getFlushed() + _whiteList[tenure].getFlushed(); }
-
-	/**
-	 * Get the number of allocated bytes flushed at the end of the gc cycle (macro-fragmentation).
-	 */
-	uintptr_t getRecycled() { return _whiteList[survivor].getRecycled() + _whiteList[tenure].getRecycled(); }
-
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-	void
-	sumStackActivationCounts(uintptr_t *frameCounters, uintptr_t frameCount)
-	{
-		uintptr_t stackDepth = _stackTop - _stackBottom;
-		for (uintptr_t i = 0; i < OMR_MIN(frameCount,  stackDepth); i += 1) {
-			frameCounters[i] += _activationCounts[i];
-		}
-	}
-	const uintptr_t *
-	getConditionCounts(uintptr_t *conditionCount)
-	{
-		*conditionCount = conditions_mask + 1;
-		return (const uintptr_t *)_conditionCounts;
-	}
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
-
-#if defined(EVACUATOR_DEBUG)
-	void checkSurvivor();
-	void checkTenure();
-#endif /* defined(EVACUATOR_DEBUG) */
 
 	/**
 	 * Constructor. The minimum number of stack frames is three - two to hold whitespace and one or more
@@ -426,57 +433,42 @@ public:
 	 * @param controller the controller
 	 * @param extensions the global GC extensions
 	 */
-	MM_Evacuator(uintptr_t workerIndex, MM_EvacuatorController *controller, MM_GCExtensionsBase *extensions, uint8_t *regionBase[2])
+	MM_Evacuator(uintptr_t workerIndex, MM_EvacuatorController *controller, MM_GCExtensionsBase *extensions)
 		: MM_EvacuatorBase(workerIndex, extensions)
 		, _controller(controller)
-		, _delegate()
-		, _objectModel(&_extensions->objectModel)
-		, _forge(_extensions->getForge())
-		, _maxStackDepth(!isScanOptionSelected(extensions, breadth_first_always) ? extensions->evacuatorMaximumStackDepth : 1)
-		, _maxInsideCopyDistance(_objectModel->adjustSizeInBytes(extensions->evacuatorMaximumInsideCopyDistance))
-		, _maxInsideCopySize(_objectModel->adjustSizeInBytes(extensions->evacuatorMaximumInsideCopySize))
-		, _baseReportingVolumeDelta(0)
-		, _volumeReportingThreshold(0)
-		, _workspaceReleaseThreshold(0)
+		, _maxStackDepth(isScanOptionSelected(_extensions, breadth_first_always) ? 1 : _extensions->evacuatorMaximumStackDepth)
+		, _maxInsideCopyDistance(_objectModel->adjustSizeInBytes(OMR_MAX(modal_inside_copy_distance, _extensions->evacuatorMaximumInsideCopyDistance)))
+		, _minInsideCopySize(modal_inside_copy_size)
+		, _maxInsideCopySize(_objectModel->adjustSizeInBytes(OMR_MAX(_minInsideCopySize, _extensions->evacuatorMaximumInsideCopySize)))
+		, _workReleaseThreshold(_extensions->evacuatorMinimumWorkspaceSize)
+		, _conditionFlags(0)
+		, _insideDistanceMax(_maxInsideCopyDistance)
+		, _insideSizeMax(_maxInsideCopySize)
+		, _slot(NULL)
+		, _stack(newStackFrameArray(_forge, _maxStackDepth + 1))
+		, _nil(_stack + _maxStackDepth)
+		, _sp(_nil)
 		, _tenureMask(0)
 		, _stats(NULL)
-		, _stackLimit(_stackCeiling)
-		, _stackBottom(MM_EvacuatorScanspace::newInstanceArray(_forge, OMR_MAX(_maxStackDepth, unreachable)))
-		, _stackTop(_stackBottom + OMR_MAX(_maxStackDepth, unreachable))
-		, _stackCeiling(_stackBottom + _maxStackDepth)
-		, _scanStackFrame(NULL)
-		, _copyspace(MM_EvacuatorCopyspace::newInstanceArray(_forge))
-		, _whiteList(MM_EvacuatorWhitelist::newInstanceArray(_forge))
-		, _largeCopyspace()
-		, _freeList(_forge)
+		, _delegate()
 		, _workList(&_freeList)
+		, _freeList(_forge)
+		, _whiteList(MM_EvacuatorWhitelist::newInstanceArray(_forge))
 		, _mutex(NULL)
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-		, _activationCounts((uintptr_t *)_forge->allocate(sizeof(uintptr_t) * (_stackTop - _stackBottom), OMR::GC::AllocationCategory::FIXED, OMR_GET_CALLSITE()))
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 		, _abortedCycle(false)
 	{
 		_typeId = __FUNCTION__;
 
-		_workList.evacuator(this);
-
-		_whiteStackFrame[tenure] = _whiteStackFrame[survivor] = NULL;
+		_rp[insideSurvivor] = _rp[insideTenure] = _nil;
 		_whiteList[survivor].evacuator(this);
 		_whiteList[tenure].evacuator(this);
-
-		_baseMetrics[survivor_copy] = _volumeMetrics[survivor_copy] = 0;
-		_baseMetrics[tenure_copy] = _volumeMetrics[tenure_copy] = 0;
-		_baseMetrics[scanned] = _volumeMetrics[scanned] = 0;
-
-		_copyspaceOverflow[survivor] = _copyspaceOverflow[tenure] = 0;
+		_workList.evacuator(this);
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-		memset(_activationCounts, 0, sizeof(uintptr_t) * (_stackTop - _stackBottom));
-		memset(_conditionCounts, 0, sizeof(_conditionCounts));
 		Debug_MM_true(0 == (_objectModel->getObjectAlignmentInBytes() % sizeof(uintptr_t)));
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
-		Assert_MM_true((NULL != _stackBottom) && (NULL != _copyspace) && (NULL != _whiteList));
+		Assert_MM_true((NULL != _stack) && (NULL != _whiteList));
 	}
 
 	friend class MM_EvacuatorController;

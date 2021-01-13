@@ -33,6 +33,21 @@
 #include "SlotObject.hpp"
 
 /**
+ * FOR DEBUG BUILDS ONLY:
+ * Define DEBUG_OBJECT_SCANNERS to enable fine-grained validation of scanner state.
+ *
+ * #define DEBUG_OBJECT_SCANNERS
+ *
+ * Do not commit this file with DEBUG_OBJECT_SCANNERS defined.
+ */
+#undef DEBUG_OBJECT_SCANNERS
+#if defined(DEBUG_OBJECT_SCANNERS)
+#define Debug_OS_true(assertion) Assert_MM_true(assertion)
+#else
+#define Debug_OS_true(assertion)
+#endif /*  */
+
+/**
  * This object scanning model allows an inline getNextSlot() implementation and works best
  * with object representations that contain all object reference slots within one or more
  * contiguous blocks of fomrobject_t-aligned memory. This allows reference slots to be
@@ -46,27 +61,40 @@
  * and allows scanning for most objects (<32/64 slots) to complete inline, without
  * requiring a virtual method call (getNextSlotMap()). Otherwise at least one such call
  * is required before getNextSlot() will return NULL.
+ *
+ * The object scanner leaf optimization option is enabled by the OMR_GC_LEAF_BITS
+ * flag in omrcfg.h.
+ *
+ * TODO: Get OMR_GC_LEAF_BITS into omrcfg.h.
+ *
+ * Scanners with leaf optimization are used in marking contexts when parent
+ * object class includes information identifying which child slots refer to
+ * objects belonging to classes that contain no reference slots. The OMR
+ * marking scheme will use this information to optimize the marking work
+ * stack.
+ *
+ * If leaf information is available it should be expressed in the implementation
+ * of getNextSlotMap(uintptr_t *, uintptr_t *, bool *). This method is called to
+ * obtain a bit map of the contained leaf slots conforming to the reference slot
+ * map. An initial leaf map is provided to the GC_ObjectScanner constructor and
+ * it is refreshed when required.
  */
 class GC_ObjectScanner : public MM_BaseVirtual
 {
 	/* Data Members */
 private:
-	const uintptr_t *_selfReferencingSlotOffsets;
-	uintptr_t _selfReferencingSlotCount;
 
 protected:
 	static const intptr_t _bitsPerScanMap = sizeof(uintptr_t) << 3;
 
-	const uintptr_t _compressObjectReferences;
-	const uintptr_t _sizeofObjectReferenceSlot;
-
-	uintptr_t _scanMap;						/**< Bit map of reference slots in object being scanned (32/64-bit window) */
+	GC_SlotObject _slotObject;				/**< wrapper for most recently scanned slot */
+	uintptr_t _scanMap;						/**< bit map of reference slots in object being scanned (32/64-bit window) */
 #if defined(OMR_GC_LEAF_BITS)
-	uintptr_t _leafMap;						/**< Bit map of reference slots in object that refernce leaf objects */
+	uintptr_t _leafMap;						/**< bit map of reference slots in object that reference leaf objects */
 #endif /* defined(OMR_GC_LEAF_BITS) */
-	fomrobject_t *_scanPtr;					/**< Pointer to base of object slots mapped by current _scanMap */
-	GC_SlotObject _slotObject;				/**< Create own SlotObject class to provide output */
-	uintptr_t _flags;						/**< Scavenger context flags (scanRoots, scanHeap, ...) */
+	fomrobject_t *_mapPtr;					/**< address corresponding to LSB of _scanMap */
+	uint32_t _objectSize;					/**< instance size in bytes or 0 if not known or >2^32 */
+	uint32_t _flags;						/**< instance flags (scanRoots, scanHeap, ...) + client flags*/
 	
 public:
 	/**
@@ -79,30 +107,50 @@ public:
 		, indexableObject = 4			/* this is set for array object scanners where the array elements can be partitioned for multithreaded scanning */
 		, indexableObjectNoSplit = 8	/* this is set for array object scanners where the array elements cannot be partitioned for multithreaded scanning */
 		, headObjectScanner = 16		/* this is set for array object scanners containing the elements from the first split segment, and for all non-indexable objects */
-		, linkedObjectScanner = 32		/* this is set for scanners for linked objects that have 1 or more self-referencing fields */
-		, noMoreSlots = 128				/* this is set when object has more no slots to scan past current bitmap */
+		, noMoreSlots = 32				/* this is set when object has more no slots to scan past current bitmap */
+		, nullObject = 64				/* null object scanner */
+		, compressObjectSlots = 128		/* fomrobject_t is compressed */
+	};
+
+	enum ClientFlags
+	{
+		/* subclasses can define private flags in this closed range */
+		clientFlagBase = (intptr_t)1 << 16
+		, clientFlagMax = (intptr_t)1 << 31
 	};
 
 	/* Member Functions */
 private:
-	/**
-	 * Advance scan pointer by one slot.
-	 */
-	MMINLINE void
-	nextSlot()
-	{
-		_scanPtr = (fomrobject_t *)((uintptr_t)_scanPtr + _sizeofObjectReferenceSlot);
-		_scanMap >>= 1;
-#if defined(OMR_GC_LEAF_BITS)
-		_leafMap >>= 1;
-#endif /* defined(OMR_GC_LEAF_BITS) */
-	}
 
 protected:
 	/**
-	 * Constructor. Without leaf optimization. Context generational nursery collection.
+	 * Constructor. With leaf optimization.
 	 *
-	 * For marking context with leaf optimization see below:
+	 * @param[in] env The environment for the scanning thread
+	 * @param[in] scanPtr The first slot contained in the object to be scanned
+	 * @param[in] leafMap Map of slots in slotMap that reference leaf objects (ignored if #if !defined(OMR_GC_LEAF_BITS))
+	 * @param[in] scanMap Bit map marking object reference slots, with least significant bit mapped to slot at scanPtr
+	 * @param[in] flags A bit mask comprised of InstanceFlags
+	 */
+	GC_ObjectScanner(MM_EnvironmentBase *env, fomrobject_t *scanPtr, uintptr_t leafMap, uintptr_t scanMap, uintptr_t flags)
+		: MM_BaseVirtual()
+		, _slotObject(env->getOmrVM(), (fomrobject_t *)(1 | (uintptr_t)scanPtr))
+		, _scanMap(scanMap)
+#if defined(OMR_GC_LEAF_BITS)
+		, _leafMap(leafMap)
+#endif /* defined(OMR_GC_LEAF_BITS) */
+		, _mapPtr(scanPtr)
+		, _objectSize(0)
+		, _flags(flags | headObjectScanner | (uint32_t)(env->getExtensions()->compressObjectReferences() ? compressObjectSlots : 0))
+	{
+#if defined(OMR_GC_LEAF_BITS)
+		Debug_OS_true(0 == (_leafMap & ~_scanMap));
+#endif /* defined(OMR_GC_LEAF_BITS) */
+		_typeId = __FUNCTION__;
+	}
+
+	/**
+	 * Constructor. Without leaf optimization.
 	 *
 	 * @param[in] env The environment for the scanning thread
 	 * @param[in] scanPtr The first slot contained in the object to be scanned
@@ -110,22 +158,9 @@ protected:
 	 * @param[in] flags A bit mask comprised of InstanceFlags
 	 */
 	GC_ObjectScanner(MM_EnvironmentBase *env, fomrobject_t *scanPtr, uintptr_t scanMap, uintptr_t flags)
-		: MM_BaseVirtual()
-		, _selfReferencingSlotOffsets(NULL)
-		, _selfReferencingSlotCount(0)
-		, _compressObjectReferences(env->getExtensions()->compressObjectReferences() ? 1 : 0)
-		, _sizeofObjectReferenceSlot((uintptr_t)GC_SlotObject::addToSlotAddress(scanPtr, 1, (1 == _compressObjectReferences)) - (uintptr_t)scanPtr)
-		, _scanMap(scanMap)
-#if defined(OMR_GC_LEAF_BITS)
-		, _leafMap(0)
-#endif /* defined(OMR_GC_LEAF_BITS) */
-		, _scanPtr(scanPtr)
-		, _slotObject(env->getOmrVM(), NULL)
-		, _flags(flags | headObjectScanner)
-	{
-		_typeId = __FUNCTION__;
-	}
-	
+		: GC_ObjectScanner(env, scanPtr, 0, scanMap, flags )
+	{ }
+
 	/**
 	 * Set up the scanner. Subclasses should provide a non-virtual implementation
 	 * to build next slot map and call it from their constructor or just after
@@ -137,8 +172,8 @@ protected:
 	 * the sublcass implementation should call setNoMoreSlots() to indicate that
 	 * the getNextSlotMap() method should not be called to refresh the slot map.
 	 *
-	 * This non-virtual base class implementation should be called directly from
-	 * the sublcass implementation, eg
+	 * This non-virtual base class implementation should be called directly at the
+	 * end of the sublcass implementation, eg
 	 *
 	 *    MM_ObjectScanner::initialize(env);
 	 *
@@ -146,228 +181,351 @@ protected:
 	 * @see getNextSlotMap()
 	 * @see putNextSlotMapBit()
 	 */
-	MMINLINE void
+	void
 	initialize(MM_EnvironmentBase *env)
 	{
+		Debug_OS_true(_mapPtr == getScanPtr());
+		Debug_OS_true(1 == (1 & (uintptr_t)_slotObject.readAddressFromSlot()));
+		Debug_OS_true((NULL != _mapPtr) || ((0 == _scanMap) && !hasMoreSlots()));
+#if defined(OMR_GC_LEAF_BITS)
+		Debug_OS_true(_leafMap == (_leafMap & _scanMap));
+#endif /* defined(OMR_GC_LEAF_BITS) */
 	}
 
 	/**
-	 * Helper function can be used to rebuild bit map of reference fields in
-	 * implementation of getNextSlotMap(). Simply call this method once for
-	 * each object slot holding a reference pointer. Best to present reference
-	 * fields in increasing address order until method returns false or no
-	 * more fields.
+	 * Return base pointer and scan bit map for next block of contiguous slots to be scanned. The
+	 * base pointer must be fomrobject_t-aligned. Bits in the bit map are scanned in order of
+	 * increasing significance, and the least significant bit maps to the slot at the returned
+	 * base pointer.
 	 *
-	 * If the method returns false, the field presented in the call will not
-	 * be included in the slot map and must be presented first in the next
-	 * call to getNextSlotMap().
+	 * When this method is called the scan
+	 *
+	 * *** NOTE: successive map base address ranges are not presumed to be contiguous. Map base
+	 * can point to any fomrobject_t aligned address within the heap region being scanned.
+	 *
+	 * *** NOTE: if the returned map base pointer is *not* NULL *and* slot scanMap is empty (0)
+	 * the next call to getNextSlot() will return NULL *and* setNoMoreSlots(). This will preempt
+	 * further scanning of object slots so consider it unwise to return an empty slot map with a
+	 * non-NULL map base unless the object is known to contain no more unscanned slots.
+	 *
+	 * @param[out] scanMap the bit map for the slots contiguous with the returned base pointer
+	 * @param[out] hasNextSlotMap set this to true if this method should be called again, false if this map is known to be last
+	 * @return a pointer to the first slot mapped by the least significant bit of the map, or NULL if no more slots
 	 */
-	MMINLINE bool
-	putNextSlotMapBit(fomrobject_t *nextSlotAddress)
+#if defined(OMR_GC_LEAF_BITS)
+	virtual fomrobject_t *getNextSlotMap(uintptr_t *scanMap, uintptr_t *leafMap, bool *hasNextSlotMap) = 0;
+#else
+	virtual fomrobject_t *getNextSlotMap(uintptr_t *scanMap, bool *hasNextSlotMap) = 0;
+#endif /* defined(OMR_GC_LEAF_BITS) */
+
+	/**
+	 * Helper function can be used to initialize the map base pointer and slot map of
+	 * reference fields for a new object to be scanned or to rebase and build slot map
+	 * for a large (>32/64 slots) or discontiguous object. Call this method once for
+	 * each object slot holding a reference pointer (best to present reference fields
+	 * in increasing address order). Iterate until this method returns false, at which
+	 * point the map pointer will be rebased and slot map for the new map base will be
+	 * complete.
+ 	 *
+ 	 * Call this method with nextSlotAddress == NULL in getNextSlotMap() if there are no
+ 	 * more slots to return. This is not required if noMoreSlots flag was set in the
+ 	 * object scanner subclass constructor or in initialize(), or the most recent call
+ 	 * to getNextSlotMap() returned hasNoMoreSlots == true.
+	 *
+	 * This method may be used in subclass implementations of initialize()/getNextSlotMap().
+	 * If the method returns false, the field presented in the call will not be included in
+	 * the slot map and must be presented first in the next call to getNextSlotMap().
+	 *
+	 * Alternatively, subclasses can fully initialize this base class by passing map base
+	 * pointer and initial slot map in the constructor. This obviates calls to getNextSlotMap()
+	 * for objects with reference slots confined to a <32/64 slot range of contiguous slots
+	 * as long as noMoreSlots flag is also set in constructor.
+	 */
+	bool
+#if defined(OMR_GC_LEAF_BITS)
+	putNextSlotMapBit(fomrobject_t *nextSlotAddress, bool isLeafSlot, bool hasMoreSlots)
+#else
+	putNextSlotMapBit(fomrobject_t *nextSlotAddress, bool hasMoreSlots)
+#endif /* defined(OMR_GC_LEAF_BITS) */
 	{
-		if (0 != _scanMap) {
-			intptr_t bitOffset = nextSlotAddress - _scanPtr;
-			if (_bitsPerScanMap < bitOffset) {
-				_scanMap |= (uintptr_t)1 << bitOffset;
+		if (NULL != nextSlotAddress) {
+			if (0 != _scanMap) {
+				intptr_t bitOffset = GC_SlotObject::subtractSlotAddresses(nextSlotAddress, _mapPtr, compressObjectReferences());
+				if (_bitsPerScanMap < bitOffset) {
+					_scanMap |= 1 << bitOffset;
+#if defined(OMR_GC_LEAF_BITS)
+					if (isLeafSlot) {
+						_leafMap |= 1 << bitOffset;
+					}
+#endif /* defined(OMR_GC_LEAF_BITS) */
+					return true;
+				} else {
+					setFlags(noMoreSlots, !hasMoreSlots);
+				}
 			} else {
-				return false;
+				setMapPtr(nextSlotAddress, hasMoreSlots);
+				_scanMap = 1;
+				return true;
 			}
 		} else {
-			_scanPtr = nextSlotAddress;
-			_scanMap = 1;
+			setMapPtr(NULL, false);
 		}
-		return true;
+		return false;
+	}
+
+	/**
+	 * Set a new map pointer and sync scan pointer to base of map with LSB set to indicate that
+	 * the slot at the base of the map has not previously been scanned in getNextSlot().
+	 */
+	void
+	setMapPtr(fomrobject_t *mapPtr, bool hasMoreSlots)
+	{
+		_mapPtr = mapPtr;
+		if (NULL != _mapPtr) {
+			_slotObject.writeAddressToSlot((fomrobject_t* )(1 | (uintptr_t)_mapPtr));
+			setFlags(noMoreSlots, !hasMoreSlots);
+		} else {
+			/* clear the map and slot object at end of object scan */
+			_slotObject.writeAddressToSlot(NULL);
+			setFlags(noMoreSlots, true);
+			_scanMap = 0;
+#if defined(OMR_GC_LEAF_BITS)
+			_leafMap = 0;
+#endif /* defined(OMR_GC_LEAF_BITS) */
+		}
+		Debug_OS_true(_mapPtr <= getScanPtr());
+		Debug_OS_true(_bitsPerScanMap > GC_SlotObject::subtractSlotAddresses(getScanPtr(), _mapPtr, compressObjectReferences()));
+		Debug_OS_true((NULL != _mapPtr) || ((0 == _scanMap) && isFlagSet(noMoreSlots)));
+	}
+
+	/**
+	 * Get a pointer to the unscanned slot after the current scan head. This returns
+	 * position only and does not ensure the validity of the contents of the slot.
+	 *
+	 * NOTE: returned value may point to a slot not contained in the object if the
+	 * scan pointer has past the end of the current slot map but getNextSlotMap()
+	 * has not yet been called. The validity of the slot contents can be checked
+	 * by ensuring that the returned value is < (_mapPtr + _bitsPerScanMap).
+	 *
+	 * @return NULL if no more slots (object scan complete)
+	 */
+	fomrobject_t *
+	getScanPtr()
+	{
+		fomrobject_t *scanPtr = _slotObject.readAddressFromSlot();
+		if (NULL != scanPtr) {
+			bool slotHasBeenScanned = (0 ==  (1 & (uintptr_t)scanPtr));
+			if (slotHasBeenScanned) {
+				scanPtr = GC_SlotObject::addToSlotAddress(scanPtr, 1, compressObjectReferences());
+			} else {
+				scanPtr = (fomrobject_t *)(~(uintptr_t)1 & (uintptr_t)scanPtr);
+			}
+		}
+		return scanPtr;
 	}
 
 public:
-	MMINLINE bool compressObjectReferences() { return (0 != _compressObjectReferences); }
+	/**
+	 * Get the address of the slot returned from the most recent call to getNextSlot(), or the
+	 * first (unexamined) slot in the object. This is intended to provide positional information
+	 * only, caller should not modify slot contents.
+	 */
+	const fomrobject_t *
+	getScanSlotAddress() const
+	{
+		return (const fomrobject_t *)(~(uintptr_t)1 & (uintptr_t)_slotObject.readAddressFromSlot());
+	}
+
+	/**
+	 * Get the next object slot if one is available in the range of the current _slotMap. Otherwise,
+	 * if client has indicated that there are more slots in the object, call getNextSlotMap() to
+	 * obtain the next _slotMap and_mapPtr (which may not be contiguous with completed range of slots).
+	 * This continues until client indicates no more slots by signaling noMoreSlots when returning the
+	 * last _mapPtr/_slotMap from getNextSlotMap().
+	 *
+	 * @see getNextSlotMap()
+	 * @return a pointer to a slot object encapsulating the next object slot, or NULL if no next object slot
+	 */
+	const GC_SlotObject *
+	getNextSlot()
+	{
+		Debug_OS_true(_mapPtr <= getScanPtr());
+		Debug_OS_true((0 == _scanMap) || (_bitsPerScanMap >= GC_SlotObject::subtractSlotAddresses(getScanPtr(), _mapPtr, compressObjectReferences())));
+		while (0 != _scanMap) {
+			/* skip over most recently returned slot or start with fresh map base and slot bit map */
+			if (0 == (1 & (uintptr_t)_slotObject.readAddressFromSlot())) {
+				/* shift slot bit out of scan map and advance slot address */
+				_scanMap >>= 1;
+#if defined(OMR_GC_LEAF_BITS)
+				_leafMap >>= 1;
+#endif /* defined(OMR_GC_LEAF_BITS) */
+				_slotObject.addToSlotAddress(1);
+			} else {
+				/*  slot bit and slot address are aligned with map base but slot not yet scanned so just remove the tag */
+				_slotObject.writeAddressToSlot((fomrobject_t*)getScanPtr());
+			}
+
+			/* while there is at least one bit-mapped slot, advance scan pointer to a non-NULL slot or end of map */
+			while ((0 != _scanMap) && ((0 == (1 & _scanMap)) || (NULL == _slotObject.readReferenceFromSlot()))) {
+				_scanMap >>= 1;
+#if defined(OMR_GC_LEAF_BITS)
+				_leafMap >>= 1;
+#endif /* defined(OMR_GC_LEAF_BITS) */
+				_slotObject.addToSlotAddress(1);
+			}
+
+			/* if the scan bit for the slot is set return the slot object, otherwise look for a next slot map */
+			if (0 != _scanMap) {
+#if defined(DEBUG_OBJBECT_SCANNER)
+				uintptr_t slot = (uintptr_t)(*(uint32_t*)(uintptr_t)(*(uint32_t*)((uintptr_t)_slotObject.readAddressFromSlot() & ~(uintptr_t)0x1)));
+				Debug_OS_true((0x4 & slot) || (0x99669966 == *(uint32_t*)(~(uintptr_t)0xff & slot)));
+#endif /* defined(DEBUG_OBJBECT_SCANNER) */
+				return &_slotObject;
+			} else if (hasMoreSlots()) {
+				bool hasNextSlotMap = false;
+				/* advance map and scan slot past trailing 0s in current scan bit map and tag slot address to indicate not scanned */
+				_mapPtr = GC_SlotObject::addToSlotAddress(_mapPtr, _bitsPerScanMap, compressObjectReferences());
+				_slotObject.writeAddressToSlot((fomrobject_t* )(1 | (uintptr_t)_mapPtr));
+				/* rebase map pointer and refresh the scan bit map */
+#if defined(OMR_GC_LEAF_BITS)
+				fomrobject_t *mapPtr = getNextSlotMap(&_scanMap, &_leafMap, &hasNextSlotMap);
+				Debug_OS_true(_leafMap == (_leafMap & _scanMap));
+#else
+				fomrobject_t *mapPtr = getNextSlotMap(&_scanMap, &hasNextSlotMap);
+#endif /* defined(OMR_GC_LEAF_BITS) */
+				setMapPtr(mapPtr, hasNextSlotMap);
+			} else {
+				break;
+			}
+		}
+
+		_slotObject.writeAddressToSlot(NULL);
+		setMapPtr(NULL, false);
+		return NULL;
+	}
+
+#if defined(OMR_GC_LEAF_BITS)
+	const GC_SlotObject *
+	getNextSlot(bool* isLeafSlot)
+	{
+		const GC_SlotObject *nextSlot = getNextSlot();
+		*isLeafSlot = (NULL == nextSlot) || (0 != (1 & _leafMap));
+		return nextSlot;
+	}
+#endif /* defined(OMR_GC_LEAF_BITS) */
+
+	/**
+	 * Convenience method tests for object slot compression 64->32 bits.
+	 */
+	bool compressObjectReferences() const { return (0 != ((uintptr_t)compressObjectSlots & _flags)); }
+
+	/**
+	 * Convenience method gets fomrobject_t size in bytes.
+	 */
+	uintptr_t
+	slotSizeInBytes() const
+	{
+		fomrobject_t *oneSlot = GC_SlotObject::addToSlotAddress((fomrobject_t *)0, 1, compressObjectReferences());
+		return (uintptr_t)oneSlot;
+	}
+
+	/**
+	 * Convenience method sets/gets instance size in bytes, or 0 if not known. Setting this
+	 * >0 when the scanner is initialized obviates querying the object model for size at the
+	 * end of object scan and will override the object size default (0) preset in this base
+	 * class constructor.
+	 */
+	void objectSizeInBytes(uint32_t totalInstanceSize) { _objectSize = totalInstanceSize; }
+	uint32_t objectSizeInBytes() const { return _objectSize; }
 
 	/**
 	 * Leaf objects contain no reference slots (eg plain value object or empty array).
 	 *
 	 * @return true if the object to be scanned is a leaf object
 	 */
-	MMINLINE bool isLeafObject() { return (0 == _scanMap) && !hasMoreSlots(); }
-
-	/**
-	 * Return base pointer and slot bit map for next block of contiguous slots to be scanned. The
-	 * base pointer must be fomrobject_t-aligned. Bits in the bit map are scanned in order of
-	 * increasing significance, and the least significant bit maps to the slot at the returned
-	 * base pointer.
-	 *
-	 * @param[out] scanMap the bit map for the slots contiguous with the returned base pointer
-	 * @param[out] hasNextSlotMap set this to true if this method should be called again, false if this map is known to be last
-	 * @return a pointer to the first slot mapped by the least significant bit of the map, or NULL if no more slots
-	 */
-	virtual fomrobject_t *getNextSlotMap(uintptr_t *scanMap, bool *hasNextSlotMap) = 0;
-
-	/**
-	 * Scanners for objects with one or more self-referencing fields may call this method to set the field
-	 * offsets to be returned from getSelfReferencingSlotOffsets().
-	 *
-	 * Field offsets are presented in fomrobject_t-size slot offsets from object header. For example,
-	 * if the header occupies 2 fomorbject_t slots, the offset of the first slot in contiguous body
-	 * of object would be 2.
-	 *
-	 * @param[in] offsets the fomrobject_t slot offsets of the self-referencing fields in the scanned object
-	 * @param[in] count the number of self referencing fied offsets in the offsets array
-	 */
-	void setSelfReferencingSlotOffsets(uintptr_t *offsets, uintptr_t count)
-	{
-		_selfReferencingSlotOffsets = offsets;
-		_selfReferencingSlotCount = count;
-	}
-
-	/**
-	 * Get self-referencing field slot offsets for a recursively defined object.
-	 *
-	 * @param[in] lastOffset the offset returned from the most recent call, or 0 if not yet called
-	 * @return the offset of the next self-referencing field
-	 */
-	const uintptr_t *getSelfReferencingSlotOffsets(uintptr_t &count)
-	{
-		count = _selfReferencingSlotCount;
-		return _selfReferencingSlotOffsets;
-	}
-
-	/**
-	 * Get the next object slot if one is available.
-	 *
-	 * @return a pointer to a slot object encapsulating the next object slot, or NULL if no next object slot
-	 */
-	MMINLINE GC_SlotObject *
-	getNextSlot()
-	{
-		while (NULL != _scanPtr) {
-			/* while there is at least one bit-mapped slot, advance scan ptr to a non-NULL slot or end of map */
-			while ((0 != _scanMap) && ((0 == (1 & _scanMap)) || (0 == GC_SlotObject::readSlot(_scanPtr, compressObjectReferences())))) {
-				nextSlot();
-			}
-			if (0 != _scanMap) {
-				/* set up to return slot object for non-NULL slot at scan ptr and advance scan ptr */
-				_slotObject.writeAddressToSlot(_scanPtr);
-				nextSlot();
-				return &_slotObject;
-			}
-
-			/* slot bit map is empty -- try to refresh it */
-			if (hasMoreSlots()) {
-				bool hasNextSlotMap;
-				_scanPtr = getNextSlotMap(&_scanMap, &hasNextSlotMap);
-				if (!hasNextSlotMap) {
-					setNoMoreSlots();
-				}
-			} else {
-				_scanPtr = NULL;
-			}
-		}
-
-		return NULL;
-	}
-
-	/**
-	 * The object scanner leaf optimization option is enabled by the OMR_GC_LEAF_BITS
-	 * flag in omrcfg.h.
-	 *
-	 * TODO: Get OMR_GC_LEAF_BITS into omrcfg.h.
-	 *
-	 * Scanners with leaf optimization are used in marking contexts when parent
-	 * object class includes information identifying which child slots refer to
-	 * objects belonging to classes that contain no reference slots. The OMR
-	 * marking scheme will use this information to optimize the marking work
-	 * stack.
-	 *
-	 * If leaf information is available it should be expressed in the implementation
-	 * of getNextSlotMap(uintptr_t *, uintptr_t *, bool *). This method is called to
-	 * obtain a bit map of the contained leaf slots conforming to the reference slot
-	 * map. An initial leaf map is provided to the GC_ObjectScanner constructor and
-	 * it is refreshed when required.
-	 */
-
-#if defined(OMR_GC_LEAF_BITS)
-	/**
-	 * Return base pointer and slot bit map for next block of contiguous slots to be scanned. The
-	 * base pointer must be fomrobject_t-aligned. Bits in the bit map are scanned in order of
-	 * increasing significance, and the least significant bit maps to the slot at the returned
-	 * base pointer.
-	 *
-	 * @param[out] scanMap the bit map for the slots contiguous with the returned base pointer
-	 * @param[out] leafMap the leaf bit map for the slots contiguous with the returned base pointer
-	 * @param[out] hasNextSlotMap set this to true if this method should be called again, false if this map is known to be last
-	 * @return a pointer to the first slot mapped by the least significant bit of the map, or NULL if no more slots
-	 */
-	virtual fomrobject_t *getNextSlotMap(uintptr_t *scanMap, uintptr_t *leafMap, bool *hasNextSlotMap) = 0;
-
-	/**
-	 * Get the next object slot if one is available.
-	 *
-	 * @param[out] *isLeafSlot will be true if the slot refers to a leaf object
-	 * @return a pointer to a slot object encapsulating the next object slot, or NULL if no next object slot
-	 */
-	MMINLINE GC_SlotObject *
-	getNextSlot(bool* isLeafSlot)
-	{
-		while (NULL != _scanPtr) {
-			/* while there is at least one bit-mapped slot, advance scan ptr to a non-NULL slot or end of map */
-			while ((0 != _scanMap) && ((0 == (1 & _scanMap)) || (0 == GC_SlotObject::readSlot(_scanPtr, compressObjectReferences())))) {
-				nextSlot();
-			}
-			if (0 != _scanMap) {
-				/* set up to return slot object for non-NULL slot at scan ptr and advance scan ptr */
-				_slotObject.writeAddressToSlot(_scanPtr);
-				*isLeafSlot = (0 != (1 & _leafMap));
-				nextSlot();
-				return &_slotObject;
-			}
-
-			/* slot bit map is empty -- try to refresh it */
-			if (hasMoreSlots()) {
-				bool hasNextSlotMap;
-				_scanPtr = getNextSlotMap(&_scanMap, &_leafMap, &hasNextSlotMap);
-				if (!hasNextSlotMap) {
-					setNoMoreSlots();
-				}
-			} else {
-				_scanPtr = NULL;
-				setNoMoreSlots();
-			}
-		}
-
-		*isLeafSlot = true;
-		return NULL;
-	}
-#endif /* defined(OMR_GC_LEAF_BITS) */
-
-	/**
-	 * Informational, relating to scanning context (_flags)
-	 */
-	MMINLINE void setNoMoreSlots() { _flags |= (uintptr_t)GC_ObjectScanner::noMoreSlots; }
+	bool isLeafObject() const { return (0 == _scanMap) && !hasMoreSlots(); }
 	
-	MMINLINE void setMoreSlots() { _flags &= ~(uintptr_t)GC_ObjectScanner::noMoreSlots; }
+	/**
+	 * Null object scanners (GC_NullObjectScanner) are placeholders to allow RAM reserved for
+	 * object sacanner instantiation to be safely initialized.
+	 */
+	static bool isNullObject(uintptr_t flags) { return (0 != (nullObject & flags)); }
+	bool isNullObject() const { return isFlagSet(nullObject); }
 
-	MMINLINE bool hasMoreSlots() { return 0 == (GC_ObjectScanner::noMoreSlots & _flags); }
+	/**
+	 * Informational, relating to scanning and client context (_flags)
+	 */
+	void setFlags(uint32_t flags, bool value) { if (value) { _flags |= flags; } else { _flags &= ~flags; } }
+	void clearFlags(uint32_t flags) { _flags &= ~flags; }
+	bool isFlagSet(uint32_t flag) const { return (0 != (_flags & flag)); }
 
-	MMINLINE static bool isRootScan(uintptr_t flags) { return (0 != (scanRoots & flags)); }
+	void setNoMoreSlots() { setFlags(noMoreSlots, true); }
+	void setMoreSlots() { setFlags(noMoreSlots, false); }
+	bool hasMoreSlots() const { return !isFlagSet(noMoreSlots); }
 
-	MMINLINE bool isRootScan() { return (0 != (scanRoots & _flags)); }
+	static bool isRootScan(uintptr_t flags) { return (0 != (scanRoots & flags)); }
+	bool isRootScan() const { return isFlagSet(scanRoots); }
 
-	MMINLINE static bool isHeapScan(uintptr_t flags) { return (0 != (scanHeap & flags)); }
+	static bool isHeapScan(uintptr_t flags){ return (0 != (scanHeap & flags)); }
+	bool isHeapScan() const { return isFlagSet(scanHeap); }
 
-	MMINLINE bool isHeapScan() { return (0 != (scanHeap & _flags)); }
+	static bool isIndexableObject(uintptr_t flags) { return (0 != (indexableObject & flags)); }
+	bool const isIndexableObject() const { return isFlagSet(indexableObject); }
+	static bool isIndexableObjectNoSplit(uintptr_t flags) { return (0 != (indexableObjectNoSplit & flags)); }
+	bool const isIndexableObjectNoSplit() const { return isFlagSet(indexableObjectNoSplit); }
 
-	MMINLINE static bool isIndexableObject(uintptr_t flags) { return (0 != (indexableObject & flags)); }
-
-	MMINLINE bool isIndexableObject() { return (0 != (indexableObject & _flags)); }
-
-	MMINLINE static bool isIndexableObjectNoSplit(uintptr_t flags) { return (0 != (indexableObjectNoSplit & flags)); }
-
-	MMINLINE bool isIndexableObjectNoSplit() { return (0 != (indexableObjectNoSplit & _flags)); }
-
-	MMINLINE bool isLinkedObjectScanner() { return (0 != (linkedObjectScanner & _flags)); }
-
-	MMINLINE void clearHeadObjectScanner() { _flags &= ~headObjectScanner; }
-
-	MMINLINE bool isHeadObjectScanner() { return (0 != (headObjectScanner & _flags)); }
+	bool const isHeadObjectScanner() const { return isFlagSet(headObjectScanner); }
+	void clearHeadObjectScanner() { clearFlags(headObjectScanner); }
 };
 
+/**
+ * This subclass is a simple wrapper for an object that is known to contain no heap references. It is useful
+ * for initializing static RAM used to instantiate successive scanners in place when object type is not
+ * known. The resulting scanner instance will always return NULL from getNextSlot().
+ *
+ * Use GC_ObjectScanner::isLeafObject() to test for leaf object without calling getNextSlot().
+ */
+class GC_NullObjectScanner : public GC_ObjectScanner
+{
+	/* Data Members */
+private:
+protected:
+public:
+
+	/* Function Members */
+private:
+protected:
+public:
+	GC_NullObjectScanner(MM_EnvironmentBase *env)
+#if defined(OMR_GC_LEAF_BITS)
+	: GC_ObjectScanner(env, NULL, 0, 0, noMoreSlots)
+#else
+	: GC_ObjectScanner(env, NULL, 0, noMoreSlots)
+#endif /* defined(OMR_GC_LEAF_BITS) */
+	{
+		_typeId = __FUNCTION__;
+	}
+
+	static GC_NullObjectScanner *
+	newInstance(MM_EnvironmentBase *env, void *allocSpace)
+	{
+		GC_NullObjectScanner *objectScanner = (GC_NullObjectScanner *)allocSpace;
+		if (NULL != objectScanner) {
+			new(objectScanner) GC_NullObjectScanner(env);
+			objectScanner->initialize(env);
+		}
+		return objectScanner;
+	}
+
+	virtual fomrobject_t *
+#if defined(OMR_GC_LEAF_BITS)
+	getNextSlotMap(uintptr_t *scanMap, uintptr_t *leafMap, bool *hasNextSlotMap)
+#else
+	getNextSlotMap(uintptr_t *scanMap, bool *hasNextSlotMap)
+#endif /* defined(OMR_GC_LEAF_BITS) */
+	{
+		Assert_MM_unreachable();
+		return NULL;
+	}
+};
 #endif /* OBJECTSCANNER_HPP_ */

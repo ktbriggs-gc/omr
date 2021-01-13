@@ -113,10 +113,10 @@ class HeapRegionStateTable;
 #define EVACUATOR_DEFAULT_STACK_DEPTH			16
 #define EVACUATOR_DEFAULT_INSIDE_OBJECT_SIZE	4096
 #define EVACUATOR_DEFAULT_INSIDE_COPY_DISTANCE	4096
-#define EVACUATOR_DEFAULT_WORK_QUANTUM			EVACUATOR_DEFAULT_INSIDE_COPY_DISTANCE
-#define EVACUATOR_DEFAULT_WORK_QUANTA			2
-#define EVACUATOR_DEFAULT_SCAN_OPTIONS			370
-#define EVACUATOR_DEFAULT_TRACE_OPTIONS			1
+#define EVACUATOR_DEFAULT_COPYSPACE_SIZE		8192
+#define EVACUATOR_DEFAULT_WORKSPACE_SIZE		4096
+#define EVACUATOR_DEFAULT_SCAN_OPTIONS			0
+#define EVACUATOR_DEFAULT_TRACE_OPTIONS			0
 
 #undef EVACUATOR_ALWAYS
 
@@ -484,8 +484,8 @@ public:
 	uintptr_t evacuatorMaximumStackDepth; /**< The number of scan stack frames to allocate */
 	uintptr_t evacuatorMaximumInsideCopySize; /**< The size in bytes of the largest object that can be copied inside an evacuator scan stack frame */
 	uintptr_t evacuatorMaximumInsideCopyDistance; /**< Referent object wills be pushed up the stack if inside scan-copy distance if greater than this value */
-	uintptr_t evacuatorWorkQuantumSize; /**< Determines minimum evacuator wok packet volume */
-	uintptr_t evacuatorWorkQuanta; /**< Determines minimum evacuator volume of work after stall condition cleared */
+	uintptr_t evacuatorMinimumCopyspaceSize; /**< The smallest size in bytes of an evacuator copyspace */
+	uintptr_t evacuatorMinimumWorkspaceSize; /**<The smallest size in bytes of an evacuator workspace */
 	uintptr_t evacuatorScanOptions; /**< Determines evacuator scanning modality */
 	uintptr_t evacuatorTraceOptions; /**< Determines evacuator tracing output options */
 	uintptr_t scavengerFailedTenureThreshold;
@@ -1440,6 +1440,7 @@ public:
 		, gcExclusiveAccessThreadId(NULL)
 		, gcExclusiveAccessMutex(NULL)
 		, _lightweightNonReentrantLockPool(NULL)
+		, _lightweightNonReentrantLockPoolMutex(NULL)
 #if defined(OMR_GC_COMBINATION_SPEC)
 		, _isSegregatedHeap(false)
 		, _isVLHGC(false)
@@ -1536,6 +1537,7 @@ public:
 #if defined(OMR_GC_BATCH_CLEAR_TLH)
 		, batchClearTLH(0)
 #endif /* OMR_GC_BATCH_CLEAR_TLH */
+		, gcStatsMutex(NULL)
 		, gcThreadCount(0)
 		, gcThreadCountForced(false)
 #if defined(OMR_GC_MODRON_SCAVENGER) || defined(OMR_GC_VLHGC)
@@ -1577,8 +1579,8 @@ public:
 		, evacuatorMaximumStackDepth(EVACUATOR_DEFAULT_STACK_DEPTH)
 		, evacuatorMaximumInsideCopySize(EVACUATOR_DEFAULT_INSIDE_OBJECT_SIZE)
 		, evacuatorMaximumInsideCopyDistance(EVACUATOR_DEFAULT_INSIDE_COPY_DISTANCE)
-		, evacuatorWorkQuantumSize(EVACUATOR_DEFAULT_WORK_QUANTUM)
-		, evacuatorWorkQuanta(EVACUATOR_DEFAULT_WORK_QUANTA)
+		, evacuatorMinimumCopyspaceSize(EVACUATOR_DEFAULT_COPYSPACE_SIZE)
+		, evacuatorMinimumWorkspaceSize(EVACUATOR_DEFAULT_WORKSPACE_SIZE)
 		, evacuatorScanOptions(EVACUATOR_DEFAULT_SCAN_OPTIONS)
 		, evacuatorTraceOptions(EVACUATOR_DEFAULT_TRACE_OPTIONS)
 		, scavengerFailedTenureThreshold(0)

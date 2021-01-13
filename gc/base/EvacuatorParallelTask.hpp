@@ -58,8 +58,9 @@ public:
 	virtual void run(MM_EnvironmentBase *env);
 	virtual void setup(MM_EnvironmentBase *env);
 	virtual void cleanup(MM_EnvironmentBase *env);
+	virtual void complete(MM_EnvironmentBase *envBase);
 
-#if defined(J9MODRON_TGC_PARALLEL_STATISTICS) || defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+#if defined(J9MODRON_TGC_PARALLEL_STATISTICS)
 	/**
 	 * Override to collect stall time statistics.
 	 * @see MM_ParallelTask::synchronizeGCThreads
@@ -71,13 +72,21 @@ public:
 	 * @see MM_ParallelTask::synchronizeGCThreadsAndReleaseMaster
 	 */
 	virtual bool synchronizeGCThreadsAndReleaseMaster(MM_EnvironmentBase *env, const char *id);
-	
+
 	/**
 	 * Override to collect stall time statistics.
 	 * @see MM_ParallelTask::synchronizeGCThreadsAndReleaseSingleThread
 	 */
 	virtual bool synchronizeGCThreadsAndReleaseSingleThread(MM_EnvironmentBase *env, const char *id);
-#endif /* defined(J9MODRON_TGC_PARALLEL_STATISTICS) || defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+
+#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+	/**
+	 * Override to validation end conditions
+	 * @see MM_ParllelTask::releaseSynchronizedGCThreads
+	 */
+	virtual void releaseSynchronizedGCThreads(MM_EnvironmentBase *envBase);
+#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+#endif /* J9MODRON_TGC_PARALLEL_STATISTICS */
 
 	/**
 	 * Create a ParallelScavengeTask object.

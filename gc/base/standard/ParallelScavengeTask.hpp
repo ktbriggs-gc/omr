@@ -36,6 +36,7 @@
 #include "omrmodroncore.h"
 
 #include "CycleState.hpp"
+#include "EvacuatorBase.hpp"
 #include "ParallelTask.hpp"
 
 class MM_Dispatcher;
@@ -47,6 +48,8 @@ class MM_EnvironmentBase;
  */
 class MM_ParallelScavengeTask : public MM_ParallelTask
 {
+private:
+
 protected:
 	MM_Scavenger *_collector;
 	MM_CycleState *_cycleState;  /**< Collection cycle state active for the task */
@@ -57,6 +60,7 @@ public:
 	virtual void run(MM_EnvironmentBase *env);
 	virtual void setup(MM_EnvironmentBase *env);
 	virtual void cleanup(MM_EnvironmentBase *env);
+	virtual void complete(MM_EnvironmentBase *env);
 	virtual void masterSetup(MM_EnvironmentBase *env);
 
 #if defined(J9MODRON_TGC_PARALLEL_STATISTICS)

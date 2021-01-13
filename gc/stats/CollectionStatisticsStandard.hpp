@@ -61,6 +61,9 @@ public:
 	uint32_t _tenureFragmentation; /**< fragmentation indicator, can be NO_FRAGMENTATION, MICRO_FRAGMENTATION, MACRO_FRAGMENTATION, indicate if fragmentation info are ready in _microFragmentedSize and _macroFragmentedSize */
 	uintptr_t _microFragmentedSize; /**< Micro Fragmentation in Byte */
 	uintptr_t _macroFragmentedSize; /**< Macro Fragmentation in Byte*/
+	omrthread_process_stats_t _startProcessStats; /**< Context switch (involuntary and voluntary) counts at start */
+	omrthread_process_stats_t _endProcessStats;   /**< Context switch (involuntary and voluntary) counts at end */
+
 private:
 protected:
 public:

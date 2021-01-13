@@ -166,9 +166,11 @@ MM_ScavengerStats::clear(bool firstIncrement)
 	_acquireListLockCount = 0;
 	_aliasToCopyCacheCount = 0;
 	_workStallCount = 0;
+	_workWaitCount = 0;
 	_completeStallCount = 0;
 	_syncStallCount = 0;
 	_workStallTime = 0;
+	_workWaitTime = 0;
 	_completeStallTime = 0;
 	_syncStallTime = 0;
 	_totalDeepStructures = 0;

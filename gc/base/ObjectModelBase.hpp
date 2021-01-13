@@ -52,6 +52,15 @@ struct OMR_VMThread;
 #define OMR_MINIMUM_OBJECT_SIZE 			16		/* size of smallest possible object allocation, in bytes */
 
 /**
+ * Object classification bits for calculateObjectDetailsForCopy(). This partition covers live set of objects in the heap.
+ */
+#define OMR_GC_MIXED_OBJECT		0
+#define OMR_GC_POINTER_ARRAY	1
+#define OMR_GC_PRIMITIVE_OBJECT	2
+#define OMR_GC_PRIMITIVE_ARRAY	3
+#define OMR_GC_PRIMITIVE_MASK	2
+
+/**
  * Provides information for a given object.
  * @ingroup GC_Base
  */
@@ -300,17 +309,28 @@ public:
 #if defined(OMR_GC_MODRON_SCAVENGER)
 	/**
 	 * Calculate the actual object size and the size adjusted to object alignment. The calculated object size
-	 * includes any expansion bytes allocated if the object will grow when moved.
+	 * includes any expansion bytes allocated if the object will grow when moved. This method returns a set of
+	 * bits classifying the structure of the object (defined in ObjectModelBase.hpp):
 	 *
+	 * OMR_GC_POINTER_ARRAY:	object is an array of pointers to objects
+	 * OMR_GC_PRIMITIVE:		object is scalar and contains no pointers (mixed object)
+	 * OMR_GC_PRIMITIVE_ARRAY:	object is an array of primitives (byte, int, float, ...)
+	 *
+	 * If no bits are set the object is scalar mixed object and contains pointers.
+	 *
+	 * @return the classification bits for the object
+	 *
+	 * @param[in] env points to the environment for the calling thread
 	 * @param[in] forwardedHeader pointer to the MM_ForwardedHeader instance encapsulating the object
 	 * @param[out] objectCopySizeInBytes actual object size
 	 * @param[out] objectReserveSizeInBytes size adjusted to object alignment
 	 * @param[out] hotFieldAlignmentDescriptor pointer to hot field alignment descriptor for class (or NULL)
+	 * @return object classification bits
 	 */
-	MMINLINE void
+	MMINLINE uintptr_t
 	calculateObjectDetailsForCopy(MM_EnvironmentBase *env, MM_ForwardedHeader *forwardedHeader, uintptr_t *objectCopySizeInBytes, uintptr_t *objectReserveSizeInBytes, uintptr_t *hotFieldAlignmentDescriptor)
 	{
-		_delegate.calculateObjectDetailsForCopy(env, forwardedHeader, objectCopySizeInBytes, objectReserveSizeInBytes, hotFieldAlignmentDescriptor);
+		return _delegate.calculateObjectDetailsForCopy(env, forwardedHeader, objectCopySizeInBytes, objectReserveSizeInBytes, hotFieldAlignmentDescriptor);
 	}
 #endif /* defined(OMR_GC_MODRON_SCAVENGER) */
 

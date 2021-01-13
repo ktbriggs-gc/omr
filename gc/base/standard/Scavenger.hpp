@@ -242,11 +242,11 @@ public:
 	 * Implementation of CopyAndForward for slotObject input format
 	 * @param slotObject input field in slotObject format
 	 */
-	MMINLINE bool copyAndForward(MM_EnvironmentStandard *env, GC_SlotObject *slotObject);
+	MMINLINE bool copyAndForward(MM_EnvironmentStandard *env, const GC_SlotObject *slotObject);
 
-	MMINLINE bool copyAndForward(MM_EnvironmentStandard *env, volatile omrobjectptr_t *objectPtrIndirect);
+	MMINLINE bool copyAndForward(MM_EnvironmentStandard *env, void *referringSlotAddress, volatile omrobjectptr_t *objectPtrIndirect);
 
-	MMINLINE omrobjectptr_t copy(MM_EnvironmentStandard *env, MM_ForwardedHeader* forwardedHeader);
+	MMINLINE omrobjectptr_t copy(MM_EnvironmentStandard *env, void *referringAddress, MM_ForwardedHeader* forwardedHeader);
 	
 	/* Flush remaining Copy Scan updates which would otherwise be discarded 
 	 * @param majorFlush last thread to flush updates should perform a major flush (push accumulated updates to history record) 
@@ -322,7 +322,7 @@ public:
 	 * BackOutFixSlot implementation
 	 * @param slotObject input field in slotObject format
 	 */
-	bool backOutFixSlot(GC_SlotObject *slotObject);
+	bool backOutFixSlot(const GC_SlotObject *slotObject);
 
 	void backoutFixupAndReverseForwardPointersInSurvivor(MM_EnvironmentStandard *env);
 	void processRememberedSetInBackout(MM_EnvironmentStandard *env);
@@ -331,7 +331,7 @@ public:
 #if defined(OMR_GC_CONCURRENT_SCAVENGER)
 	void fixupNurserySlots(MM_EnvironmentStandard *env);
 	void fixupObjectScan(MM_EnvironmentStandard *env, omrobjectptr_t objectPtr);
-	bool fixupSlot(GC_SlotObject *slotObject);
+	bool fixupSlot(const GC_SlotObject *slotObject);
 	bool fixupSlotWithoutCompression(volatile omrobjectptr_t *slotPtr);
 	
 	void scavengeRememberedSetListIndirect(MM_EnvironmentStandard *env);
@@ -369,8 +369,8 @@ public:
 	void completeScanCache(MM_EnvironmentStandard *env, MM_CopyScanCacheStandard* scanCache);
 	void incrementalScanCacheBySlot(MM_EnvironmentStandard *env, MM_CopyScanCacheStandard* scanCache);
 
-	MMINLINE MM_CopyScanCacheStandard *aliasToCopyCache(MM_EnvironmentStandard *env, GC_SlotObject *scannedSlot, MM_CopyScanCacheStandard* scanCache, MM_CopyScanCacheStandard* copyCache);
-	MMINLINE uintptr_t scanCacheDistanceMetric(MM_CopyScanCacheStandard* cache, GC_SlotObject *scanSlot);
+	MMINLINE MM_CopyScanCacheStandard *aliasToCopyCache(MM_EnvironmentStandard *env, const GC_SlotObject *scannedSlot, MM_CopyScanCacheStandard* scanCache, MM_CopyScanCacheStandard* copyCache);
+	MMINLINE uintptr_t scanCacheDistanceMetric(MM_CopyScanCacheStandard* cache, const GC_SlotObject *scanSlot);
 	MMINLINE uintptr_t copyCacheDistanceMetric(MM_CopyScanCacheStandard* cache);
 
 	MMINLINE MM_CopyScanCacheStandard *getNextScanCacheFromList(MM_EnvironmentStandard *env);
@@ -817,7 +817,7 @@ public:
 	 * @param[in/out] slotPtr Pointer to slot holding reference to object to be copied and forwarded
 	 */
 	bool copyObjectSlot(MM_EnvironmentStandard *env, volatile omrobjectptr_t *slotPtr);
-	bool copyObjectSlot(MM_EnvironmentStandard *env, GC_SlotObject* slotObject);
+	bool copyObjectSlot(MM_EnvironmentStandard *env, const GC_SlotObject *slotObject);
 	omrobjectptr_t copyObject(MM_EnvironmentStandard *env, MM_ForwardedHeader* forwardedHeader);
 
 	/**

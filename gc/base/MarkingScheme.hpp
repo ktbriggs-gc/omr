@@ -235,7 +235,7 @@ public:
 		GC_ObjectScanner *objectScanner = _delegate.getObjectScanner(env, objectPtr, &objectScannerState, reason, &sizeToDo);
 		if (NULL != objectScanner) {
 			bool isLeafSlot = false;
-			GC_SlotObject *slotObject;
+			const GC_SlotObject *slotObject;
 #if defined(OMR_GC_LEAF_BITS)
 			while (NULL != (slotObject = objectScanner->getNextSlot(&isLeafSlot))) {
 #else /* OMR_GC_LEAF_BITS */
@@ -286,7 +286,7 @@ public:
 	 * in the final phase of Concurrent GC when we scan Nursery. 
 	 */
 
-	void fixupForwardedSlot(GC_SlotObject *slotObject) {
+	void fixupForwardedSlot(const GC_SlotObject *slotObject) {
 #if defined(OMR_GC_CONCURRENT_SCAVENGER)
 		if (_extensions->isConcurrentScavengerEnabled() && _extensions->isScavengerBackOutFlagRaised()) {
 			fixupForwardedSlotOutline(slotObject);
@@ -294,7 +294,7 @@ public:
 #endif /* OMR_GC_CONCURRENT_SCAVENGER */
 	}
 	
-	void fixupForwardedSlotOutline(GC_SlotObject *slotObject);
+	void fixupForwardedSlotOutline(const GC_SlotObject *slotObject);
 
 	/**
 	 * Create a MarkingScheme object.

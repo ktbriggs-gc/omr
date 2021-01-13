@@ -29,18 +29,22 @@
 #include "CollectionStatisticsStandard.hpp"
 #include "Dispatcher.hpp"
 #include "EvacuatorController.hpp"
-#include "EvacuatorScanspace.hpp"
 #include "Math.hpp"
 #include "MemorySubSpace.hpp"
 #include "MemorySubSpaceSemiSpace.hpp"
 #include "ScavengerCopyScanRatio.hpp"
 #include "ScavengerStats.hpp"
 
+#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+#include "HeapRegionManager.hpp"
+#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+
 bool
 MM_EvacuatorController::setEvacuatorFlag(uintptr_t flag, bool value)
 {
 	uintptr_t oldFlags;
 
+	VM_AtomicSupport::readBarrier();
 	if (value) {
 		oldFlags = VM_AtomicSupport::bitOr(&_evacuatorFlags, flag);
 	} else {
@@ -69,19 +73,12 @@ MM_EvacuatorController::initialize(MM_EnvironmentBase *env)
 		/* normalize evacuator scan options selected in extensions post command-line parsing */
 		_extensions->evacuatorScanOptions = MM_Evacuator::selectedScanOptions(_extensions);
 
-		/* if jvm is only user process cpu would likely stall if thread yielded to wait on the controller mutex so enable spinning */
-		if (0 != omrthread_monitor_init_with_name(&_controllerMutex, 0, "MM_EvacuatorController::_controllerMutex")) {
-			_controllerMutex = NULL;
+		/* disable spinning for monitor-try-enter access to controller work distribution mutex */
+		if (0 != omrthread_monitor_init_with_name(&_workMutex, 0, "MM_EvacuatorController::_workMutex")) {
+			_workMutex = NULL;
 			return false;
 		}
-
-		/* evacuator never uses monitor-enter and requires monitor-try-enter semantics to *not* yield cpu for reporter mutex so disable spinning */
-		if (0 != omrthread_monitor_init_with_name(&_reporterMutex, J9THREAD_MONITOR_DISABLE_SPINNING, "MM_EvacuatorController::_reporterMutex")) {
-			omrthread_monitor_destroy(_controllerMutex);
-			_controllerMutex = NULL;
-			_reporterMutex = NULL;
-			return false;
-		}
+		((J9ThreadAbstractMonitor *)_workMutex)->flags &= ~J9THREAD_MONITOR_TRY_ENTER_SPIN;
 
 		for (uintptr_t workerIndex = 0; workerIndex < _maxGCThreads; workerIndex++) {
 			_evacuatorTask[workerIndex] = NULL;
@@ -94,7 +91,7 @@ MM_EvacuatorController::initialize(MM_EnvironmentBase *env)
 			_memorySubspace[region] = NULL;
 		}
 
-		result = (NULL != _controllerMutex);
+		result = (NULL != _workMutex);
 	}
 
 	return result;
@@ -104,30 +101,28 @@ void
 MM_EvacuatorController::tearDown(MM_EnvironmentBase *env)
 {
 	if (_extensions->isEvacuatorEnabled()) {
+		MM_Forge *forge = env->getForge();
+		/* free the evacuator instances in the evacuator control array */
 		for (uintptr_t workerIndex = 0; workerIndex < _maxGCThreads; workerIndex++) {
 			if (NULL != _evacuatorTask[workerIndex]) {
 				Debug_MM_true(NULL == _evacuatorTask[workerIndex]->getEnvironment());
 				_evacuatorTask[workerIndex]->kill();
+				forge->free((void *)_evacuatorTask[workerIndex]);
 				_evacuatorTask[workerIndex] = NULL;
 			}
 		}
-
-		MM_Forge *forge = env->getForge();
-
+		forge->free((void *)_evacuatorTask);
 		/* free the system memory bound to these const (not nullable) pointers */
 		forge->free((void *)_boundEvacuatorBitmap);
 		forge->free((void *)_stalledEvacuatorBitmap);
 		forge->free((void *)_resumingEvacuatorBitmap);
 		forge->free((void *)_evacuatorMask);
-		forge->free((void *)_evacuatorTask);
+		forge->free((void *)_evacuatorMetrics[0]);
+		forge->free((void *)_evacuatorMetrics);
 
-		if (NULL != _controllerMutex) {
-			omrthread_monitor_destroy(_controllerMutex);
-			_controllerMutex = NULL;
-		}
-		if (NULL != _reporterMutex) {
-			omrthread_monitor_destroy(_reporterMutex);
-			_reporterMutex = NULL;
+		if (NULL != _workMutex) {
+			omrthread_monitor_destroy(_workMutex);
+			_workMutex = NULL;
 		}
 	}
 }
@@ -137,19 +132,31 @@ MM_EvacuatorController::collectorStartup(MM_GCExtensionsBase* extensions)
 {
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 	if (extensions->isEvacuatorEnabled()) {
-#if defined(EVACUATOR_DEBUG)
 		if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_END)) {
-#endif /* defined(EVACUATOR_DEBUG) */
 
 			OMRPORT_ACCESS_FROM_OMRVM(_omrVM);
 			_collectorStartTime = omrtime_hires_clock();
-			omrtty_printf("%5lu      :   startup; stack-depth:%lu; object-size:%lx; frame-width:%lx; work-size:%lx; work-quanta:%lx\n", _history.getEpoch()->gc,
+			omrtty_printf("startup; stack-depth:%llu; max-inside-size:%llu; max-inside-distance:%llu; min-copyspace::%llu; min-workspace:%llu; options:",
 				_extensions->evacuatorMaximumStackDepth, _extensions->evacuatorMaximumInsideCopySize, _extensions->evacuatorMaximumInsideCopyDistance,
-				_extensions->evacuatorWorkQuantumSize, _extensions->evacuatorWorkQuanta);
-
-#if defined(EVACUATOR_DEBUG)
+				_minimumCopyspaceSize, _minimumWorkspaceSize);
+			for (uintptr_t condition = 0; condition < MM_Evacuator::condition_count; condition += 1) {
+				if (MM_Evacuator::isScanOptionSelected(_extensions, (uintptr_t)1 << condition)) {
+					omrtty_printf(" %s", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition));
+				}
+			}
+			omrtty_printf("\nheap;");
+			MM_HeapRegionDescriptor *regionDescriptor = extensions->heapRegionManager->getFirstTableRegion();
+			while (NULL != regionDescriptor) {
+				omrtty_printf(" R{0x%llx, 0x%llx}", regionDescriptor->getLowAddress(), regionDescriptor->getHighAddress());
+				regionDescriptor = extensions->heapRegionManager->getNextTableRegion(regionDescriptor);
+			}
+			regionDescriptor = extensions->heapRegionManager->getFirstAuxiliaryRegion();
+			while (NULL != regionDescriptor) {
+				omrtty_printf(" A{0x%llx, 0x%llx}", regionDescriptor->getLowAddress(), regionDescriptor->getHighAddress());
+				regionDescriptor = extensions->heapRegionManager->getNextAuxiliaryRegion(regionDescriptor);
+			}
+			omrtty_printf("\n");
 		}
-#endif /* defined(EVACUATOR_DEBUG) */
 	}
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 
@@ -162,54 +169,67 @@ MM_EvacuatorController::collectorShutdown(MM_GCExtensionsBase* extensions)
 	flushTenureWhitespace(true);
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-#if defined(EVACUATOR_DEBUG)
 	if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_END)) {
-#endif /* defined(EVACUATOR_DEBUG) */
 
 		OMRPORT_ACCESS_FROM_OMRVM(_omrVM);
-		uint64_t collectorElapsedMicros = omrtime_hires_delta(_collectorStartTime, omrtime_hires_clock(), OMRPORT_TIME_DELTA_IN_MICROSECONDS);
-		omrtty_printf("%5lu      :  shutdown; elapsed:%llu\n", _history.getEpoch()->gc, collectorElapsedMicros);
-
-#if defined(EVACUATOR_DEBUG)
+		double collectorElapsedMillis = (double)omrtime_hires_delta(_collectorStartTime, omrtime_hires_clock(), OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
+		omrtty_printf("shutdown; elapsed-milliseconds:%0.3f\n", collectorElapsedMillis);
 	}
-#endif /* defined(EVACUATOR_DEBUG) */
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+}
+
+void
+MM_EvacuatorController::collectorExpanded(MM_EnvironmentBase *env, MM_MemorySubSpace *subSpace, uintptr_t expandSize)
+{
+	MM_Collector::collectorExpanded(env, subSpace, expandSize);
+	setHeapLayout();
 }
 
 void
 MM_EvacuatorController::flushTenureWhitespace(bool shutdown)
 {
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-	uintptr_t flushed = 0, discarded = 0, recycled = 0;
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+	uintptr_t recycled = 0, discarded = 0;
 
 	if (_extensions->isEvacuatorEnabled()) {
 		for (uintptr_t workerIndex = 0; workerIndex < _maxGCThreads; workerIndex += 1) {
 			if (NULL != _evacuatorTask[workerIndex]) {
-
-				_evacuatorTask[workerIndex]->flushWhitespace(MM_Evacuator::tenure);
-
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 				Debug_MM_true(NULL == _evacuatorTask[workerIndex]->getEnvironment());
-				flushed += _evacuatorTask[workerIndex]->getFlushed();
-				discarded += _evacuatorTask[workerIndex]->getDiscarded();
-				recycled += _evacuatorTask[workerIndex]->getRecycled();
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+				/* evacuator is passive (not bound to master/slave thread) here (starting global gc or collector shutting down) */
+				uintptr_t * const volumeMetrics = &_evacuatorTask[workerIndex]->_metrics->_volumeMetrics[0];
+				if (!shutdown) {
+					/* flush tenure whitelist to memory subspace and count volumes recycled and discarded */
+					_evacuatorTask[workerIndex]->flushWhitespace(MM_Evacuator::tenure);
+					discarded += volumeMetrics[MM_Evacuator::tenure_discarded];
+					recycled += volumeMetrics[MM_Evacuator::tenure_recycled];
+				} else {
+					/* abandon and count as discarded whitespace remaining in tenure whitelist */
+					MM_EvacuatorWhitelist * const whiteList = &_evacuatorTask[workerIndex]->_whiteList[MM_Evacuator::tenure];
+					while (0 < whiteList->top()) {
+						discarded += whiteList->top(0)->length();
+					}
+				}
+				volumeMetrics[MM_Evacuator::tenure_discarded] = 0;
+				volumeMetrics[MM_Evacuator::tenure_recycled] = 0;
 			}
 		}
+		if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_END)) {
+			OMRPORT_ACCESS_FROM_OMRVM(_omrVM);
+			omrtty_printf("%10s; tenure; discarded:%llu; recycled:%llu\n", (shutdown ? "finalize" : "global gc"), discarded, recycled);
+		}
 	}
+}
 
-#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
-#if defined(EVACUATOR_DEBUG)
-	if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_END)) {
-#endif /* defined(EVACUATOR_DEBUG) */
-		OMRPORT_ACCESS_FROM_OMRVM(_omrVM);
-		omrtty_printf("%5lu      :%10s; tenure; discarded:%lx; flushed:%lx; recycled:%lx\n", _history.getEpoch()->gc,
-				(shutdown ? "finalize" : "global gc"), flushed, discarded, recycled);
-#if defined(EVACUATOR_DEBUG)
-	}
-#endif /* defined(EVACUATOR_DEBUG) */
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
+void
+MM_EvacuatorController::setHeapLayout()
+{
+	MM_AtomicOperations::readBarrier();
+	_heapLayout[MM_Evacuator::survivor][0] = (uint8_t*) (_survivorSpaceBase);
+	_heapLayout[MM_Evacuator::survivor][1] = (uint8_t*) (_survivorSpaceTop);
+	_heapLayout[MM_Evacuator::tenure][0] = (uint8_t*) (_extensions->_tenureBase);
+	_heapLayout[MM_Evacuator::tenure][1] = _heapLayout[MM_Evacuator::tenure][0] + _extensions->_tenureSize;
+	_heapLayout[MM_Evacuator::evacuate][0] = (uint8_t*) (_evacuateSpaceBase);
+	_heapLayout[MM_Evacuator::evacuate][1] = (uint8_t*) (_evacuateSpaceTop);
+	MM_AtomicOperations::readWriteBarrier();
 }
 
 void
@@ -217,17 +237,15 @@ MM_EvacuatorController::masterSetupForGC(MM_EnvironmentStandard *env)
 {
 	_evacuatorIndex = 0;
 	_evacuatorFlags = 0;
-	_finalDiscardedBytes = 0;
-	_finalFlushedBytes = 0;
-	_finalRecycledBytes = 0;
 	_isNotifyOfWorkPending = 0;
-	for (intptr_t metric = MM_Evacuator::survivor_copy; metric < MM_Evacuator::metrics; metric += 1) {
-		_aggregateVolumeMetrics[metric] = 0;
-	}
+
+	/* clear collection metrics */
+	memset(&_aggregateMetrics, 0, sizeof(_aggregateMetrics));
 
 	/* reset the evacuator bit maps */
 	uintptr_t tailMask = 0;
 	uintptr_t bitmapWords = countEvacuatorBitmapWords(&tailMask, _maxGCThreads);
+	VM_AtomicSupport::readBarrier();
 	for (uintptr_t map = 0; map < bitmapWords; map += 1) {
 		Debug_MM_true(0 == _boundEvacuatorBitmap[map]);
 		Debug_MM_true(0 == _stalledEvacuatorBitmap[map]);
@@ -245,118 +263,52 @@ MM_EvacuatorController::masterSetupForGC(MM_EnvironmentStandard *env)
 	_memorySubspace[MM_Evacuator::survivor] = _survivorMemorySubSpace;
 	_memorySubspace[MM_Evacuator::tenure] = _tenureMemorySubSpace;
 
-	_heapLayout[MM_Evacuator::evacuate][0] = (uint8_t *)_evacuateSpaceBase;
-	_heapLayout[MM_Evacuator::evacuate][1] = (uint8_t *)_evacuateSpaceTop;
-	_heapLayout[MM_Evacuator::survivor][0] = (uint8_t *)_survivorSpaceBase;
-	_heapLayout[MM_Evacuator::survivor][1] = (uint8_t *)_survivorSpaceTop;
-	_heapLayout[MM_Evacuator::tenure][0] = (uint8_t *)_extensions->_tenureBase;
-	_heapLayout[MM_Evacuator::tenure][1] = _heapLayout[MM_Evacuator::tenure][0] + _extensions->_tenureSize;
+	setHeapLayout();
 
 	/* reset upper bounds for tlh allocation size, indexed by outside region -- these will be readjusted when thread count is stable */
 	_copyspaceAllocationCeiling[MM_Evacuator::survivor] = _copyspaceAllocationCeiling[MM_Evacuator::tenure] = _maximumCopyspaceSize;
 	_objectAllocationCeiling[MM_Evacuator::survivor] = _objectAllocationCeiling[MM_Evacuator::tenure] = ~(uintptr_t)0xff;
+	_allocatedVolume[MM_Evacuator::survivor] = _allocatedVolume[MM_Evacuator::tenure] = 0;
 
-	/* prepare the evacuator delegate class and enable it to add private flags for the cycle */
-	_evacuatorFlags |= MM_EvacuatorDelegate::prepareForEvacuation(env);
-
-#if defined(EVACUATOR_DEBUG)|| defined(EVACUATOR_DEBUG_ALWAYS)
-#if defined(EVACUATOR_DEBUG)
-	if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_END)) {
-#endif /* defined(EVACUATOR_DEBUG) */
-		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
-		uintptr_t survivorVolumeBytes = (uintptr_t)((uintptr_t)_heapLayout[0][1] - (uintptr_t)_heapLayout[0][0]);
-		uintptr_t projectedEvacuationBytes = calculateProjectedEvacuationBytes();
-		omrtty_printf("%5lu      :  gc start; survivor{%lx %lx} tenure{%lx %lx} evacuate{%lx %lx}; volume:%lx; projection:%lx; allocation:%lx\n",
-				_extensions->scavengerStats._gcCount,
-				(uintptr_t)_heapLayout[0][0], (uintptr_t)_heapLayout[0][1],
-				(uintptr_t)_heapLayout[1][0], (uintptr_t)_heapLayout[1][1],
-				(uintptr_t)_heapLayout[2][0], (uintptr_t)_heapLayout[2][1],
-				survivorVolumeBytes, projectedEvacuationBytes, _minimumCopyspaceSize);
-		omrtty_printf("%5lu      :   options;", _extensions->scavengerStats._gcCount);
-		for (uintptr_t condition = 1; condition < MM_Evacuator::conditions_mask; condition <<= 1) {
-			if (MM_Evacuator::isScanOptionSelected(_extensions, condition)) {
-				omrtty_printf(" %s", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition));
-			}
-		}
-		omrtty_printf("\n");
-#if defined(EVACUATOR_DEBUG)
-	}
-#endif /* defined(EVACUATOR_DEBUG) */
-#endif /* defined(EVACUATOR_DEBUG)|| defined(EVACUATOR_DEBUG_ALWAYS) */
+	/* clear private/public controller flags then set up the evacuator delegate class, which can initialize its public flags for the cycle */
+	_evacuatorFlags = MM_EvacuatorDelegate::prepareForEvacuation(env);
 }
 
 MM_Evacuator *
 MM_EvacuatorController::bindWorker(MM_EnvironmentStandard *env)
 {
 	/* get an unbound evacuator instance */
+	VM_AtomicSupport::readBarrier();
 	uintptr_t workerIndex = VM_AtomicSupport::add(&_evacuatorIndex, 1) - 1;
 
 	/* instantiate evacuator task for this worker thread if required (evacuators are instantiated once and persist until vm shuts down) */
 	if (NULL == _evacuatorTask[workerIndex]) {
-		uint8_t *regionBase[] = { _heapLayout[MM_Evacuator::survivor][0], _heapLayout[MM_Evacuator::tenure][0] };
-		_evacuatorTask[workerIndex] = MM_Evacuator::newInstance(workerIndex, this, _extensions, regionBase);
+		_evacuatorTask[workerIndex] = MM_Evacuator::newInstance(workerIndex, this, _extensions);
 		Assert_MM_true(NULL != _evacuatorTask[workerIndex]);
 	}
 
-	/* controller doesn't have final view on evacuator thread count until after first task is dispatched ... */
-	if (0 == _evacuatorCount) {
+	/* the number of dispatched threads must be stable at this point and each thread will initialize the following dependent items identically */
+	_evacuatorCount = env->_currentTask->getThreadCount();
 
-		acquireController();
-
-		/* ... so first evacuator to reach this point must complete thread count dependent initialization */
-		if (0 == _evacuatorCount) {
-
-			/* the number of dispatched threads must be stable at this point */
-			uintptr_t evacuatorCount = env->_currentTask->getThreadCount();
-
-			/* set upper bounds for tlh allocation size, indexed by outside region -- reduce these for small survivor spaces */
-			uintptr_t copyspaceSize = _maximumCopyspaceSize;
-			uintptr_t survivorVolume = _heapLayout[MM_Evacuator::survivor][1] - _heapLayout[MM_Evacuator::survivor][0];
-			while ((copyspaceSize > _minimumCopyspaceSize) && ((4 * copyspaceSize * evacuatorCount) > survivorVolume)) {
-				/* scale down tlh allocation limit until maximal cache size is small enough to ensure adequate distribution */
-				copyspaceSize -= _minimumCopyspaceSize;
-			}
-			_copyspaceAllocationCeiling[MM_Evacuator::survivor] = _copyspaceAllocationCeiling[MM_Evacuator::tenure] = OMR_MAX(_minimumCopyspaceSize, copyspaceSize);
-
-			/* reporting epochs partition survivor semispace to produce a preset number of epochs per gc cycle */
-			_bytesPerReportingEpoch = calculateProjectedEvacuationBytes() / MM_EvacuatorBase::epochs_per_cycle;
-
-			/* on average each evacuator reports bytes scanned/copied at a preset number of points in each epoch */
-			_copiedBytesReportingDelta = _bytesPerReportingEpoch / (evacuatorCount * MM_EvacuatorBase::reports_per_epoch);
-
-#if defined(EVACUATOR_DEBUG)|| defined(EVACUATOR_DEBUG_ALWAYS)
-			OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
-			_history.reset(_extensions->scavengerStats._gcCount, omrtime_hires_clock(), _copyspaceAllocationCeiling[MM_Evacuator::survivor], _copyspaceAllocationCeiling[MM_Evacuator::tenure]);
-#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
-
-			/* set evacuator count for all to see and stop banging into this critical region */
-			fillEvacuatorBitmap(_evacuatorMask, evacuatorCount);
-			VM_AtomicSupport::set(&_evacuatorCount, evacuatorCount);
-		}
-
-		releaseController();
-	}
+	/* set upper bound for tlh allocation size is indexed by outside region -- reduce these for small region spaces */
+	uintptr_t optimalAllocationSize = (_heapLayout[MM_Evacuator::survivor][1] - _heapLayout[MM_Evacuator::survivor][0]) / (MM_Evacuator::copyspaces * _evacuatorCount);
+	optimalAllocationSize = OMR_MAX(OMR_MIN(_maximumCopyspaceSize, _extensions->objectModel.adjustSizeInBytes(optimalAllocationSize)), _minimumCopyspaceSize);
+	VM_AtomicSupport::readBarrier();
+	VM_AtomicSupport::lockCompareExchange(&_copyspaceAllocationCeiling[MM_Evacuator::survivor], _maximumCopyspaceSize, optimalAllocationSize);
+	VM_AtomicSupport::lockCompareExchange(&_copyspaceAllocationCeiling[MM_Evacuator::tenure], _maximumCopyspaceSize, optimalAllocationSize);
 
 	/* bind the evacuator to the gc cycle */
-	_evacuatorTask[workerIndex]->bindWorkerThread(env, _tenureMask, _heapLayout, _copiedBytesReportingDelta);
+	fillEvacuatorBitmap(_evacuatorMask);
+	_evacuatorTask[workerIndex]->bindWorkerThread(env, _tenureMask);
+	_evacuatorTask[workerIndex]->setHeapBounds(_heapLayout);
 	setEvacuatorBit(workerIndex, _boundEvacuatorBitmap);
 
-#if defined(EVACUATOR_DEBUG)
 	Debug_MM_true(_evacuatorCount > workerIndex);
 	Debug_MM_true(_evacuatorCount == env->_currentTask->getThreadCount());
 	Debug_MM_true(testEvacuatorBit(workerIndex, _evacuatorMask));
 	Debug_MM_true(isEvacuatorBitmapFull(_evacuatorMask));
-	if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_CYCLE)) {
-		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
-		omrtty_printf("%5lu %2lu %2lu: %cbind[%2lu]; ", getEpoch()->gc, getEpoch()->epoch, workerIndex, env->isMasterThread() ? '*' : ' ', _evacuatorCount);
-		printEvacuatorBitmap(env, "bound", _boundEvacuatorBitmap);
-		printEvacuatorBitmap(env, "; stalled", _stalledEvacuatorBitmap);
-		printEvacuatorBitmap(env, "; resuming", _resumingEvacuatorBitmap);
-		printEvacuatorBitmap(env, "; mask", _evacuatorMask);
-		omrtty_printf("; flags%lx; threads:%lu; reporting:%lx\n", _evacuatorFlags, env->_currentTask->getThreadCount(), _copiedBytesReportingDelta);
-	}
-#endif /* defined(EVACUATOR_DEBUG) */
 
+	/* all of the common artifacts initialized above are in stable or managed volatile RAM as long as the evacuator is bound */
 	return _evacuatorTask[workerIndex];
 }
 
@@ -368,96 +320,61 @@ MM_EvacuatorController::unbindWorker(MM_EnvironmentStandard *env)
 	/* passivate the evacuator instance */
 	clearEvacuatorBit(evacuator->getWorkerIndex(), _boundEvacuatorBitmap);
 
-	/* pull final remaining metrics from evacuator */
-	VM_AtomicSupport::add(&_finalDiscardedBytes, evacuator->getDiscarded());
-	VM_AtomicSupport::add(&_finalFlushedBytes, evacuator->getFlushed());
-	VM_AtomicSupport::add(&_finalRecycledBytes, evacuator->getRecycled());
+#if defined(EVACUATOR_DEBUG)
 	if (isEvacuatorBitmapEmpty(_boundEvacuatorBitmap)) {
 		Debug_MM_true(isEvacuatorBitmapEmpty(_stalledEvacuatorBitmap) || isAborting());
-		if (_aggregateVolumeMetrics[MM_Evacuator::survivor] <= ((5 * _modalSurvivorVolumeMetric) >> 2)) {
-			uintptr_t projectedNurseryVolume = (((OBJECT_HEADER_AGE_MAX - 1) * _modalSurvivorVolumeMetric) + _aggregateVolumeMetrics[MM_Evacuator::survivor_copy]);
-			_modalSurvivorVolumeMetric = MM_Math::roundToCeiling(OBJECT_HEADER_AGE_MAX, projectedNurseryVolume) / OBJECT_HEADER_AGE_MAX;
-		} else {
-			_modalSurvivorVolumeMetric = _aggregateVolumeMetrics[MM_Evacuator::survivor];
-		}
-		_finalEvacuatedBytes = _aggregateVolumeMetrics[MM_Evacuator::survivor_copy] + _aggregateVolumeMetrics[MM_Evacuator::tenure_copy];
-		Debug_MM_true((_finalEvacuatedBytes == _aggregateVolumeMetrics[MM_Evacuator::scanned]) || isAborting());
-	}
-
-#if defined(EVACUATOR_DEBUG)
-	if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_CYCLE)) {
-		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
-		omrtty_printf("%5lu %2lu %2lu:    unbind; ", getEpoch()->gc, getEpoch()->epoch, evacuator->getWorkerIndex());
-		printEvacuatorBitmap(env, "bound", _boundEvacuatorBitmap);
-		printEvacuatorBitmap(env, "; stalled", _stalledEvacuatorBitmap);
-		printEvacuatorBitmap(env, "; resuming", _resumingEvacuatorBitmap);
-		omrtty_printf("; flags:%lx\n", _evacuatorFlags);
-	}
-	if ((MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_HEAPCHECK)) && isEvacuatorBitmapEmpty(_boundEvacuatorBitmap)) {
-		evacuator->checkSurvivor();
-		evacuator->checkTenure();
 	}
 #endif /* defined(EVACUATOR_DEBUG) */
 
 	evacuator->unbindWorkerThread(env);
 }
 
-void MM_EvacuatorController::assertGenerationalInvariant(MM_EnvironmentStandard *env) {
-#if defined(EVACUATOR_DEBUG)
-	VM_AtomicSupport::writeBarrier();
-	OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
-	Debug_MM_true(hasCompletedScan() ^ isAborting());
-	if (MM_Evacuator::isTraceOptionSelected(_extensions, (EVACUATOR_DEBUG_CYCLE | EVACUATOR_DEBUG_WORK))) {
-		omrtty_printf("%5lu %2lu %2lu:  end scan; ", _history.getEpoch()->epoch, env->getEvacuator()->getWorkerIndex());
-		printEvacuatorBitmap(env, "stalled", _stalledEvacuatorBitmap);
-		printEvacuatorBitmap(env, "; resuming", _resumingEvacuatorBitmap);
-		omrtty_printf("; flags:%lx; copied:%lx; scanned:%lx\n",  _evacuatorFlags,
-				(_aggregateVolumeMetrics[MM_Evacuator::survivor_copy] + _aggregateVolumeMetrics[MM_Evacuator::tenure_copy]),
-				_aggregateVolumeMetrics[MM_Evacuator::scanned]);
-	}
-#endif /* defined(EVACUATOR_DEBUG) */
-
-	/* test generational invariant: the aggregate volume copied equals aggregate volume scanned unless aborting cycle */
-	const bool aborting = isAborting();
-	uintptr_t totalCopied = _aggregateVolumeMetrics[MM_Evacuator::survivor_copy] + _aggregateVolumeMetrics[MM_Evacuator::tenure_copy];
-	if ((totalCopied != _aggregateVolumeMetrics[MM_Evacuator::scanned]) && !aborting) {
-
-		/* otherwise try last chance full stop barrier just in case before asserting */
-		VM_AtomicSupport::readWriteBarrier();
-		totalCopied = _aggregateVolumeMetrics[MM_Evacuator::survivor_copy] + _aggregateVolumeMetrics[MM_Evacuator::tenure_copy];
-		if ((totalCopied == _aggregateVolumeMetrics[MM_Evacuator::scanned]) && !aborting) {
-			OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
-			omrtty_printf("***[evacuator-controller] Misread of aggregate copied/scanned bytes for asserting generational invariant\n");
+uintptr_t
+MM_EvacuatorController::getWorkReleaseThreshold() const
+{
+	uintptr_t workReleaseThreshold = _minimumWorkspaceSize;
+	const uintptr_t stalledEvacuatorCount = (uintptr_t)_stalledEvacuatorCount;
+	if (0 < stalledEvacuatorCount) {
+		if (stalledEvacuatorCount <= (_evacuatorCount >> 1)) {
+			workReleaseThreshold = OMR_MAX(MM_Evacuator::min_workspace_release, (_minimumWorkspaceSize >> 1));
+		} else {
+			workReleaseThreshold = MM_Evacuator::min_workspace_release;
 		}
-		Assert_GC_true_with_message4(env, (totalCopied == _aggregateVolumeMetrics[MM_Evacuator::scanned]) || isAborting(),
-				"***[evacuator-controller] copied bytes (survivor+tenure) (%lx+%lx)=%lx != %lx scanned bytes\n",
-				_aggregateVolumeMetrics[MM_Evacuator::survivor_copy], _aggregateVolumeMetrics[MM_Evacuator::tenure_copy], totalCopied, _aggregateVolumeMetrics[MM_Evacuator::scanned]);
 	}
+	return workReleaseThreshold;
+}
+
+uintptr_t
+MM_EvacuatorController::getWorkDistributionQuota() const
+{
+	return (_minimumCopyspaceSize << 1);
 }
 
 void
 MM_EvacuatorController::notifyOfWork(MM_Evacuator *evacuator)
 {
-	/* only one notification is required if >1 fat evacutors have distributable work when a stall condition is raised */
-	if (0 < evacuator->getDistributableVolumeOfWork(MM_Evacuator::min_workspace_release)) {
-		if (1 == VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 1)) {
-
-			acquireController();
-			if (0 < evacuator->getDistributableVolumeOfWork(MM_Evacuator::min_workspace_release)) {
-				if (1 == VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 0)) {
-					omrthread_monitor_notify(_controllerMutex);
+	/* only one notification is required if >1 fat evacutors have distributable work and >0 evacuators are waiting for work */
+	if (0 < evacuator->getDistributableVolumeOfWork()) {
+		VM_AtomicSupport::readBarrier();
+		if (1 == VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 0)) {
+			uint64_t time = knock(evacuator->getEnvironment(), _workMutex);
+			if (0 < time) {
+				if (0 < evacuator->getDistributableVolumeOfWork()) {
+					omrthread_monitor_notify(_workMutex);
 				}
+				leave(evacuator->getEnvironment(), _workMutex, time, MM_Evacuator::notify_count);
 			}
-			releaseController();
+			if ((0 == time) || (0 == evacuator->getDistributableVolumeOfWork())) {
+				VM_AtomicSupport::readBarrier();
+				VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 0, 1);
+			}
 		}
 	}
 }
 
 bool
-MM_EvacuatorController::isWaitingForWork(MM_Evacuator *worker)
+MM_EvacuatorController::waitForWork(MM_Evacuator *worker)
 {
-	Debug_MM_true(!isAborting());
-
 	uintptr_t workerIndex = worker->getWorkerIndex();
 
 	/* the worker may have pulled some work from another evacuator worklist */
@@ -467,62 +384,68 @@ MM_EvacuatorController::isWaitingForWork(MM_Evacuator *worker)
 		/* worker has work and can resume if it was stalled stall */
 		if (testEvacuatorBit(workerIndex, _stalledEvacuatorBitmap)) {
 			clearEvacuatorBit(workerIndex, _stalledEvacuatorBitmap);
+			VM_AtomicSupport::readBarrier();
 			VM_AtomicSupport::subtract(&_stalledEvacuatorCount, 1);
 		}
 
 		/* prospectively notify other stalled evacuators that there may be more work to be found */
+		VM_AtomicSupport::readBarrier();
+		VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 0);
 		if (0 < _stalledEvacuatorCount) {
-			VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 0);
-			omrthread_monitor_notify(_controllerMutex);
+			worker->_metrics->_threadMetrics[MM_Evacuator::notify_count] += 1;
+			omrthread_monitor_notify(_workMutex);
 		}
 
+		/* return to exit wait loop and continue heap scan */
 		return false;
 	}
 
-	/* this worker is stalled or stalling -- set its stall until it finds work or heap scan completes */
-	uintptr_t otherStalledEvacuators = setEvacuatorBit(workerIndex, _stalledEvacuatorBitmap);
+	/* if this worker is stalling set and hold its stall state until it finds work or heap scan completes */
+	Debug_MM_true(!testEvacuatorBit(workerIndex, _resumingEvacuatorBitmap));
 
 	/* the evacuator that sets the last stall bit to fill the stalled bitmap will notify all to complete the heap scan */
+	uintptr_t otherStalledEvacuators = setEvacuatorBit(workerIndex, _stalledEvacuatorBitmap);
 	if (0 == (otherStalledEvacuators & getEvacuatorBitMask(workerIndex))) {
-		Debug_MM_true(!testEvacuatorBit(workerIndex, _resumingEvacuatorBitmap));
-
+		VM_AtomicSupport::readBarrier();
 		VM_AtomicSupport::add(&_stalledEvacuatorCount, 1);
+		VM_AtomicSupport::readWriteBarrier();
 
 		/* if all evacuators are stalled and none are resuming (ie, with work) the scan cycle can complete or abort */
-		VM_AtomicSupport::readWriteBarrier();
-		if (isEvacuatorBitmapFull(_stalledEvacuatorBitmap) && isEvacuatorBitmapEmpty(_resumingEvacuatorBitmap)) {
-
-			/* assert generational invariant: aggregate bytes copied == bytes scanned xor cycle aborted */
+		Debug_MM_true((_stalledEvacuatorCount == _evacuatorCount) == (isEvacuatorBitmapFull(_stalledEvacuatorBitmap) && isEvacuatorBitmapEmpty(_resumingEvacuatorBitmap)));
+		if (_stalledEvacuatorCount == _evacuatorCount) {
 			assertGenerationalInvariant(worker->getEnvironment());
-
-			/* set resuming bits for all evacuators and notify stalled evacuators to resume to complete heap scan */
+			/* set resuming bits for all evacuators -- now stalled + resuming */
 			fillEvacuatorBitmap(_resumingEvacuatorBitmap);
-			omrthread_monitor_notify_all(_controllerMutex);
+			/* notify stalled evacuators to resume and complete heap scan */
+			omrthread_monitor_notify_all(_workMutex);
 		}
 	}
 
-	Debug_MM_true(testEvacuatorBit(workerIndex, _stalledEvacuatorBitmap));
-
 	/* at this point the worker's resuming bit won't be set unless another evacuator notified of end of heap scan */
 	if (!testEvacuatorBit(workerIndex, _resumingEvacuatorBitmap)) {
+		Debug_MM_true(testEvacuatorBit(workerIndex, _stalledEvacuatorBitmap));
+		Debug_MM_true(0 < _stalledEvacuatorCount);
+		Debug_MM_true(!worker->hasScanWork());
 
-		/* set pending notification flag to request notification when an evacuator has distributable work */
+		/* request and wait for another evacuator to notify of work or end of heap scan*/
+		VM_AtomicSupport::readBarrier();
 		VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 0, 1);
-
-		/* wait for another evacuator to notify of work or end of heap scan*/
-		worker->getEnvironment()->_scavengerStats._acquireScanListCount += 1;
-		omrthread_monitor_wait(_controllerMutex);
+		pause(worker->getEnvironment(), _workMutex, MM_Evacuator::wait_count);
 	}
 
 	/* another evacuator may have set resuming bit and notified end of heap scan */
 	if (testEvacuatorBit(workerIndex, _resumingEvacuatorBitmap)) {
+		Debug_MM_true(testEvacuatorBit(workerIndex, _stalledEvacuatorBitmap));
+		Debug_MM_true(0 < _stalledEvacuatorCount);
+		Debug_MM_true(!worker->hasScanWork());
 
-		/* remove resuming worker from stall */
-		clearEvacuatorBit(workerIndex, _resumingEvacuatorBitmap);
+		/* remove resuming worker from stall but leave as resuming until all evacuators synchronize and clear resuming state */
 		clearEvacuatorBit(workerIndex, _stalledEvacuatorBitmap);
+		clearEvacuatorBit(workerIndex, _resumingEvacuatorBitmap);
+		VM_AtomicSupport::readBarrier();
 		VM_AtomicSupport::subtract(&_stalledEvacuatorCount, 1);
 
-		/* return to complete heap scan */
+		/* return to exit wait loop and complete heap scan */
 		return false;
 	}
 
@@ -530,93 +453,151 @@ MM_EvacuatorController::isWaitingForWork(MM_Evacuator *worker)
 	return true;
 }
 
-uintptr_t
-MM_EvacuatorController::calculateProjectedEvacuationBytes() const
+void
+MM_EvacuatorController::aggregateEvacuatorMetrics(MM_EnvironmentStandard *env)
 {
-	/* use the modal projection once it has a full window of actual survivor volumes */
-	if (_extensions->scavengerStats._gcCount > OBJECT_HEADER_AGE_MAX) {
-		return _modalSurvivorVolumeMetric;
+	/* aggregate evacuator metrics */
+	for (uintptr_t taskIndex = 0; taskIndex < _dispatcher->threadCount(); taskIndex += 1) {
+		MM_Evacuator::Metrics *metrics = _evacuatorMetrics[taskIndex];
+		for (intptr_t metric = 0; metric < MM_Evacuator::volume_metrics; metric += 1) {
+			_aggregateMetrics._volumeMetrics[metric] += metrics->_volumeMetrics[metric];
+		}
+		for (intptr_t counter = 0; counter <= MM_Evacuator::array_counters; counter += 1) {
+			_aggregateMetrics._arrayVolumeCounts[counter] += metrics->_arrayVolumeCounts[counter];
+		}
+		for (intptr_t metric = 0; metric < MM_Evacuator::condition_states; metric += 1) {
+			_aggregateMetrics._conditionMetrics[metric] += metrics->_conditionMetrics[metric];
+		}
+		for (intptr_t metric = 0; metric < MM_Evacuator::thread_metrics; metric += 1) {
+			_aggregateMetrics._threadMetrics[metric] += metrics->_threadMetrics[metric];
+		}
 	}
 
-	/* until then use collector projection */
-	return _heapLayout[MM_Evacuator::survivor][1] - _heapLayout[MM_Evacuator::survivor][0];
+	/* aggregate volume allocated in survivor space equals aggregate bytes copied or recycled or discarded from survivor space */
+	uintptr_t disposedVolume = _aggregateMetrics._volumeMetrics[MM_Evacuator::survivor_recycled] + _aggregateMetrics._volumeMetrics[MM_Evacuator::survivor_discarded];
+	Assert_GC_true_with_message3(env, _allocatedVolume[MM_Evacuator::survivor] == (_aggregateMetrics._volumeMetrics[MM_Evacuator::survivor_copy] + disposedVolume),
+			"***[evacuator-controller] allocated survivor bytes (%lld) != (%lld+%lld) (copied+discarded) bytes\n",
+			_allocatedVolume[MM_Evacuator::survivor], _aggregateMetrics._volumeMetrics[MM_Evacuator::survivor_copy], disposedVolume);
+}
+
+void
+MM_EvacuatorController::assertGenerationalInvariant(MM_EnvironmentStandard *env) {
+	VM_AtomicSupport::readWriteBarrier();
+	if (!isAborting()) {
+		/* aggregate evacuator volume metrics */
+		uintptr_t volume[] = {0, 0, 0, 0};
+		for (uintptr_t taskIndex = 0; taskIndex < _dispatcher->threadCount(); taskIndex += 1) {
+			MM_Evacuator::Metrics *metrics = _evacuatorMetrics[taskIndex];
+			for (intptr_t metric = 0; metric <= MM_Evacuator::leaf; metric += 1) {
+				volume[metric] += metrics->_volumeMetrics[metric];
+			}
+		}
+		/* the aggregate volume copied equals aggregate volume scanned unless aborting cycle */
+		uintptr_t copied = volume[MM_Evacuator::survivor_copy] + volume[MM_Evacuator::tenure_copy];
+		uintptr_t scanned = volume[MM_Evacuator::scanned] + volume[MM_Evacuator::leaf];
+		Assert_GC_true_with_message4(env, (copied == scanned),
+				"***[evacuator-controller] copied bytes (survivor+tenure) (%lld+%lld) != (%lld+%lld) (scanned+leaf) bytes\n",
+				volume[MM_Evacuator::survivor_copy], volume[MM_Evacuator::tenure_copy],
+				volume[MM_Evacuator::scanned], volume[MM_Evacuator::leaf]);
+
+	}
 }
 
 uintptr_t
 MM_EvacuatorController::calculateOptimalWhitespaceSize(MM_Evacuator::Region region)
 {
-	/* monitor aggregate survivor copy volume and reduce tlh allocation size when running low */
-	if (MM_Evacuator::survivor == region) {
-		Debug_MM_true((uintptr_t)(_heapLayout[MM_Evacuator::survivor][1] - _heapLayout[MM_Evacuator::survivor][0]) >= _aggregateVolumeMetrics[MM_Evacuator::survivor_copy]);
-		Debug_MM_true((_maximumCopyspaceSize >> 3) >= _minimumCopyspaceSize);
-
-		/* calculate approximate total survivor whitespace remaining given current aggregate reported survivor bytes copied */
-		uintptr_t survivorVolume = _heapLayout[MM_Evacuator::survivor][1] - _heapLayout[MM_Evacuator::survivor][0];
-		uintptr_t approximateTotalSurvivorRemaining = survivorVolume - _aggregateVolumeMetrics[MM_Evacuator::survivor_copy];
-
-		/* calculate ceiling high enough to support 4 allocations/thread but no smaller that minimum */
-		uintptr_t allocationCeiling = approximateTotalSurvivorRemaining / (_evacuatorCount << 2);
-		if (allocationCeiling < _minimumCopyspaceSize) {
-			allocationCeiling = _minimumCopyspaceSize;
+	/* scale down tlh allocation size for survivor as available whitespace reserve depletes beyond critical threshold */
+	if ((MM_Evacuator::survivor == region) && (0 < _copyspaceAllocationCeiling[region])) {
+		uintptr_t optimalAllocationSize = _minimumCopyspaceSize;
+		intptr_t availableWhitespace = (_heapLayout[region][1] - _heapLayout[region][0]) - _allocatedVolume[region];
+		if ((intptr_t)optimalAllocationSize <= availableWhitespace) {
+			optimalAllocationSize = alignToObjectSize((uintptr_t)(availableWhitespace / (MM_Evacuator::copyspaces * _evacuatorCount)));
+			optimalAllocationSize = OMR_MAX(OMR_MIN(_maximumCopyspaceSize, optimalAllocationSize), _minimumCopyspaceSize);
+		} else {
+			optimalAllocationSize = 0;
 		}
-
-		/* set survivor copyspace allocation ceiling for all evacuators */
-		volatile uintptr_t *survivorAllocationCeiling = &_copyspaceAllocationCeiling[MM_Evacuator::survivor];
-		while (allocationCeiling < *survivorAllocationCeiling) {
-			VM_AtomicSupport::lockCompareExchange(survivorAllocationCeiling, *survivorAllocationCeiling, allocationCeiling);
+		/* lower the object allocation ceiling for the region if forced to accept suboptimal size*/
+		VM_AtomicSupport::readBarrier();
+		while (optimalAllocationSize < _copyspaceAllocationCeiling[region]) {
+			VM_AtomicSupport::lockCompareExchange(&_copyspaceAllocationCeiling[region], _copyspaceAllocationCeiling[region], optimalAllocationSize);
 		}
 	}
-
 	/* be as greedy as possible all the time in tenure */
 	return alignToObjectSize(_copyspaceAllocationCeiling[region]);
 }
 
-MM_EvacuatorWhitespace *
+MM_Evacuator::Whitespace *
 MM_EvacuatorController::getWhitespace(MM_Evacuator *evacuator, MM_Evacuator::Region region, uintptr_t length)
 {
-	MM_EvacuatorWhitespace *whitespace = NULL;
+	MM_Evacuator::Whitespace *whitespace = NULL;
 	MM_EnvironmentBase *env = evacuator->getEnvironment();
 
 	/* try to allocate a tlh unless object won't fit in outside copyspace remainder and remainder is still too big to whitelist */
-	uintptr_t optimalSize =  (0 < length) ? calculateOptimalWhitespaceSize(region) : _minimumCopyspaceSize;
-	uintptr_t maximumLength = optimalSize;
-	if (length <= maximumLength) {
-
+	length = alignToObjectSize(length);
+	const uintptr_t optimalSize =  calculateOptimalWhitespaceSize(region);
+	uintptr_t actualSize = optimalSize;
+	if (length <= optimalSize) {
 		/* try to allocate tlh in region to contain at least length bytes */
 		uintptr_t limitSize = OMR_MAX(_minimumCopyspaceSize, length);
-		while ((NULL == whitespace) && (optimalSize >= limitSize)) {
-
+		while ((NULL == whitespace) && (actualSize >= limitSize)) {
 			void *addrBase = NULL, *addrTop = NULL;
 			MM_AllocateDescription allocateDescription(0, 0, false, true);
 			allocateDescription.setCollectorAllocateExpandOnFailure(MM_Evacuator::tenure == region);
-			void *allocation = (MM_EvacuatorWhitespace *)getMemorySubspace(region)->collectorAllocateTLH(env, this, &allocateDescription, optimalSize, addrBase, addrTop);
+			void *allocation = (MM_Evacuator::Whitespace *)getMemorySubspace(region)->collectorAllocateTLH(env, this, &allocateDescription, actualSize, addrBase, addrTop);
 			if (NULL != allocation) {
 #if defined(EVACUATOR_DEBUG)
-				if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_POISON_DISCARD)) {
-					memset((uint8_t*)allocation, J9_GC_SINGLE_SLOT_HOLE, (uintptr_t)addrTop - (uintptr_t)addrBase);
+				Debug_MM_true(isObjectAligned(allocation));
+				if (evacuator->isDebugPoisonDiscard()) {
+					memset((uint8_t*)allocation, J9_GC_SINGLE_SLOT_HOLE, ((uintptr_t)addrTop - (uintptr_t)addrBase));
 				}
 #endif /* defined(EVACUATOR_DEBUG) */
 
 				/* got a tlh of some size <= optimalSize */
 				uintptr_t whitesize = (uintptr_t)addrTop - (uintptr_t)addrBase;
-				whitespace = MM_EvacuatorWhitespace::whitespace(allocation, whitesize, env->compressObjectReferences(),  allocateDescription.isLOAAllocation());
-
+				VM_AtomicSupport::readBarrier();
+				VM_AtomicSupport::add(&_allocatedVolume[region], whitesize);
 				env->_scavengerStats.countCopyCacheSize(whitesize, _maximumCopyspaceSize);
 				if (MM_Evacuator::survivor == region) {
 					env->_scavengerStats._semiSpaceAllocationCountSmall += 1;
 				} else {
 					env->_scavengerStats._tenureSpaceAllocationCountSmall += 1;
 				}
+				if (_extensions->_tenureSize != (uintptr_t)(evacuator->_heapBounds[MM_Evacuator::tenure][1] - evacuator->_heapBounds[MM_Evacuator::tenure][0])) {
+					evacuator->setHeapBounds(_heapLayout);
+				}
 
+				/* wrap allocation in a Whitespace for evacuator use to end allocation loop */
+				uintptr_t flags = MM_Evacuator::Whitespace::hole;
+				if (allocateDescription.isLOAAllocation()) {
+					flags |= MM_Evacuator::Whitespace::loa;
+				}
+				if (evacuator->compressObjectReferences()) {
+					flags |= MM_Evacuator::Whitespace::compress;
+				}
+				whitespace = MM_Evacuator::Whitespace::whitespace(allocation, whitesize, flags);
+#if defined(EVACUATOR_DEBUG)
+				if (evacuator->isDebugPoisonDiscard()) {
+					intptr_t offset = OMR_MIN(whitespace->length(), sizeof(MM_Evacuator::Whitespace));
+					intptr_t fill = whitespace->length() - offset;
+					if (0 < fill) {
+						memset(whitespace->getBase() + offset, (uint8_t)MM_Evacuator::Whitespace::hole, fill);
+					}
+				}
+#endif /* defined(EVACUATOR_DEBUG) */
 			} else {
-
 				/* try again using a reduced allocation size */
-				optimalSize >>= 1;
+				actualSize = (actualSize > _minimumCopyspaceSize) ? (actualSize >> 1) : 0;
 			}
 		}
 
+		/* lower the object allocation ceiling for the region if forced to accept suboptimal size*/
+		VM_AtomicSupport::readBarrier();
+		while (actualSize < _copyspaceAllocationCeiling[region]) {
+			VM_AtomicSupport::lockCompareExchange(&_copyspaceAllocationCeiling[region], _copyspaceAllocationCeiling[region], actualSize);
+		}
+
 		Debug_MM_true4(evacuator->getEnvironment(), (NULL == whitespace) || (_extensions->tlhMinimumSize <= whitespace->length()),
-				"%s tlh whitespace should not be less than tlhMinimumSize: requested=%lx; whitespace=%lx; limit=%lx\n",
+				"%s tlh whitespace should not be less than tlhMinimumSize: requested=%llx; whitespace=%llx; limit=%llx\n",
 				((MM_Evacuator::survivor == region) ? "survivor" : "tenure"), length, whitespace->length(), _copyspaceAllocationCeiling[region]);
 
 		/* hand off any unused tlh allocation to evacuator to reuse later */
@@ -627,11 +608,11 @@ MM_EvacuatorController::getWhitespace(MM_Evacuator *evacuator, MM_Evacuator::Reg
 	}
 
 #if defined(EVACUATOR_DEBUG)
-	if ((NULL != whitespace) && (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_ALLOCATE))) {
+	if ((NULL != whitespace) && evacuator->isDebugAllocate()) {
 		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
-		omrtty_printf("%5lu %2lu %2lu:  allocate; %s; %lx %lx %lx %lx %lx %lx %lx\n",
-				getEpoch()->gc, getEpoch()->epoch, evacuator->getWorkerIndex(), ((MM_Evacuator::survivor == region) ? "survivor" : "tenure"),
-				(uintptr_t)whitespace, ((NULL != whitespace) ? whitespace->length() : 0), length, maximumLength, optimalSize,
+		omrtty_printf("allocate[%2lu]; %s; %llx %llx %llx %llx %llx %llx %llx\n",
+				evacuator->getWorkerIndex(), ((MM_Evacuator::survivor == region) ? "survivor" : "tenure"),
+				(uintptr_t)whitespace, ((NULL != whitespace) ? whitespace->length() : 0), length, optimalSize, actualSize,
 				_copyspaceAllocationCeiling[region], _objectAllocationCeiling[region]);
 	}
 #endif /* defined(EVACUATOR_DEBUG) */
@@ -639,42 +620,89 @@ MM_EvacuatorController::getWhitespace(MM_Evacuator *evacuator, MM_Evacuator::Reg
 	return whitespace;
 }
 
-MM_EvacuatorWhitespace *
+MM_Evacuator::Whitespace *
 MM_EvacuatorController::getObjectWhitespace(MM_Evacuator *evacuator, MM_Evacuator::Region region, uintptr_t length)
 {
-	MM_EvacuatorWhitespace *whitespace = NULL;
+	MM_Evacuator::Whitespace *whitespace = NULL;
 	MM_EnvironmentBase *env = evacuator->getEnvironment();
 
-	/* allocate minimal (this object's exact) size */
-	MM_AllocateDescription allocateDescription(length, 0, false, true);
-	allocateDescription.setCollectorAllocateExpandOnFailure(MM_Evacuator::tenure == region);
-	void *allocation = getMemorySubspace(region)->collectorAllocate(env, this, &allocateDescription);
-	if (NULL != allocation) {
+	length = alignToObjectSize(length);
+	if (length <= _objectAllocationCeiling[region]) {
+		/* allocate minimal (this object's exact) size */
+		MM_AllocateDescription allocateDescription(length, 0, false, true);
+		allocateDescription.setCollectorAllocateExpandOnFailure(MM_Evacuator::tenure == region);
+		void *allocation = getMemorySubspace(region)->collectorAllocate(env, this, &allocateDescription);
+		if (NULL != allocation) {
+			Debug_MM_true(length == allocateDescription.getContiguousBytes());
 #if defined(EVACUATOR_DEBUG)
-		if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_POISON_DISCARD)) {
-			memset((uint8_t*)allocation, J9_GC_SINGLE_SLOT_HOLE, length);
-		}
+			Debug_MM_true(isObjectAligned(allocation));
+			if (evacuator->isDebugPoisonDiscard()) {
+				memset((uint8_t*)allocation, J9_GC_SINGLE_SLOT_HOLE, length);
+			}
 #endif /* defined(EVACUATOR_DEBUG) */
-		Debug_MM_true(isObjectAligned(allocation));
 
-		whitespace = MM_EvacuatorWhitespace::whitespace(allocation, length, env->compressObjectReferences(), allocateDescription.isLOAAllocation());
-		env->_scavengerStats.countCopyCacheSize(length, _maximumCopyspaceSize);
-		if (MM_Evacuator::survivor == region) {
-			env->_scavengerStats._semiSpaceAllocationCountLarge += 1;
+			/* allocated object whitespace */
+			VM_AtomicSupport::readBarrier();
+			VM_AtomicSupport::add(&_allocatedVolume[region], length);
+			env->_scavengerStats.countCopyCacheSize(length, _maximumCopyspaceSize);
+			if (MM_Evacuator::survivor == region) {
+				env->_scavengerStats._semiSpaceAllocationCountLarge += 1;
+			} else {
+				env->_scavengerStats._tenureSpaceAllocationCountLarge += 1;
+			}
+			if (_extensions->_tenureSize != (uintptr_t)(evacuator->_heapBounds[MM_Evacuator::tenure][1] - evacuator->_heapBounds[MM_Evacuator::tenure][0])) {
+				evacuator->setHeapBounds(_heapLayout);
+			}
+
+			/* wrap allocation in a Whitespace for evacuator use */
+			uintptr_t flags = MM_Evacuator::Whitespace::hole;
+			if (allocateDescription.isLOAAllocation()) {
+				flags |= MM_Evacuator::Whitespace::loa;
+			}
+			if (evacuator->compressObjectReferences()) {
+				flags |= MM_Evacuator::Whitespace::compress;
+			}
+			whitespace = MM_Evacuator::Whitespace::whitespace(allocation, length, flags);
+#if defined(EVACUATOR_DEBUG)
+			if (evacuator->isDebugPoisonDiscard()) {
+				intptr_t offset = OMR_MIN(whitespace->length(), sizeof(MM_Evacuator::Whitespace));
+				intptr_t fill = whitespace->length() - offset;
+				if (0 < fill) {
+					memset(whitespace->getBase() + offset, (uint8_t)MM_Evacuator::Whitespace::hole, fill);
+				}
+			}
+#endif /* defined(EVACUATOR_DEBUG)  */
 		} else {
-			env->_scavengerStats._tenureSpaceAllocationCountLarge += 1;
-		}
-
-	} else {
-
-		/* lower the object allocation ceiling for the region */
-		while (length < _objectAllocationCeiling[region]) {
-			VM_AtomicSupport::lockCompareExchange(&_objectAllocationCeiling[region], _objectAllocationCeiling[region], length);
+			/* lower the object allocation ceiling for the region */
+			if (length <= OMR_MINIMUM_OBJECT_SIZE) {
+				length = 0;
+			}
+			VM_AtomicSupport::readBarrier();
+			while (length < _objectAllocationCeiling[region]) {
+				VM_AtomicSupport::lockCompareExchange(&_objectAllocationCeiling[region], _objectAllocationCeiling[region], length);
+			}
 		}
 	}
 
+#if defined(EVACUATOR_DEBUG)
+	if ((NULL != whitespace) && evacuator->isDebugAllocate()) {
+		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
+		omrtty_printf("allocate[%2lu]; %s; %llx %llx %llx %llx %llx\n",
+				evacuator->getWorkerIndex(), ((MM_Evacuator::survivor == region) ? "survivor" : "tenure"),
+				(uintptr_t)whitespace, ((NULL != whitespace) ? whitespace->length() : 0), length,
+				_copyspaceAllocationCeiling[region], _objectAllocationCeiling[region]);
+	}
+#endif /* defined(EVACUATOR_DEBUG) */
+
 	return whitespace;
 }
+
+bool
+MM_EvacuatorController::isAllocatable(MM_Evacuator::Region region, uintptr_t sizeInBytes)
+{
+	return (sizeInBytes < OMR_MAX(_copyspaceAllocationCeiling[region], _objectAllocationCeiling[region]));
+}
+
 
 /* calculate the number of active words in the evacuator bitmaps */
 uintptr_t
@@ -728,10 +756,10 @@ MM_EvacuatorController::fillEvacuatorBitmap(volatile uintptr_t * const bitmap, u
 	uintptr_t bitmapWords = countEvacuatorBitmapWords(&tailMask, evacuatorCount);
 	uintptr_t fullWords = bitmapWords - ((0 != tailMask) ? 1 : 0);
 	for (uintptr_t map = 0; map < fullWords; map += 1) {
-		VM_AtomicSupport::set(&bitmap[map], ~(uintptr_t)0);
+		bitmap[map] = ~(uintptr_t)0;
 	}
 	if (0 < tailMask) {
-		VM_AtomicSupport::set(&bitmap[fullWords], tailMask);
+		bitmap[fullWords] = tailMask;
 	}
 }
 
@@ -747,6 +775,7 @@ MM_EvacuatorController::setEvacuatorBit(uintptr_t evacuatorIndex, volatile uintp
 {
 	uintptr_t evacuatorMask = 0;
 	uintptr_t evacuatorMap = mapEvacuatorIndexToMapAndMask(evacuatorIndex, &evacuatorMask);
+	VM_AtomicSupport::readBarrier();
 	return VM_AtomicSupport::bitOr(&bitmap[evacuatorMap], evacuatorMask);
 }
 
@@ -756,336 +785,160 @@ MM_EvacuatorController::clearEvacuatorBit(uintptr_t evacuatorIndex, volatile uin
 {
 	uintptr_t evacuatorMask = 0;
 	uintptr_t evacuatorMap = mapEvacuatorIndexToMapAndMask(evacuatorIndex, &evacuatorMask);
+	VM_AtomicSupport::readBarrier();
 	VM_AtomicSupport::bitAnd(&bitmap[evacuatorMap], ~evacuatorMask);
 }
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 void
-MM_EvacuatorController::reportProgress(MM_Evacuator *worker, uintptr_t baseScannedMetric, uintptr_t *sampledVolumeMetrics)
+MM_EvacuatorController::printConditions(MM_EnvironmentBase *env)
 {
-	/* these are default values in case _bytesPerReportingEpoch has not yet been set (see thread count knot in bindWorker()) */
-	uintptr_t oldEpoch = 0, newEpoch = 1;
-	if (0 < _bytesPerReportingEpoch) {
-		oldEpoch = baseScannedMetric / _bytesPerReportingEpoch;
-		newEpoch = sampledVolumeMetrics[MM_Evacuator::survivor_copy] / _bytesPerReportingEpoch;
-	}
-
-	/* trigger end of epoch when scanned bytes counter crosses an epoch boundary or generational invariant is satisfied */
-	uintptr_t newCopiedValue = sampledVolumeMetrics[MM_Evacuator::survivor_copy] + sampledVolumeMetrics[MM_Evacuator::tenure_copy];
-	bool lastEpoch = (0 < sampledVolumeMetrics[MM_Evacuator::scanned]) && (newCopiedValue == sampledVolumeMetrics[MM_Evacuator::scanned]);
-	if ((oldEpoch < newEpoch) || lastEpoch) {
-
-		const MM_EvacuatorHistory::Epoch *currentEpoch = _history.getEpoch();
-		uintptr_t currentProgress = currentEpoch->survivorCopied + currentEpoch->tenureCopied + currentEpoch->scanned;
-		uintptr_t sampledProgress = sampledVolumeMetrics[MM_Evacuator::survivor_copy] + sampledVolumeMetrics[MM_Evacuator::tenure_copy] + sampledVolumeMetrics[MM_Evacuator::scanned];
-		if (currentProgress < sampledProgress) {
-
-			omrthread_monitor_enter(_reporterMutex);
-
-			currentEpoch = _history.getEpoch();
-			currentProgress = currentEpoch->survivorCopied + currentEpoch->tenureCopied + currentEpoch->scanned;
-			if (currentProgress < sampledProgress) {
-
-				/* get current timestamp to mark start of next epoch */
-				OMRPORT_ACCESS_FROM_ENVIRONMENT(worker->getEnvironment());
-				uint64_t currentTimestamp = omrtime_hires_clock();
-
-				/* run around the bus sampling worklist volumes for all evacuators */
-				uintptr_t clears = 0, stalls = 0;
-				uintptr_t histogram[] = {0, 0, 0};
-				uintptr_t maxVolume = 0, minVolume = UINTPTR_MAX, totalVolume = 0;
-				uintptr_t volumeQuota = getWorkNotificationQuota(_minimumWorkspaceSize);
-				for (uintptr_t index = 0; index < _evacuatorCount; index += 1) {
-					MM_Evacuator *next = isBoundEvacuator(index) ? _evacuatorTask[index] : NULL;
-					if (NULL != next) {
-						uintptr_t volume = next->getVolumeOfWork();
-						totalVolume += volume;
-						if (volume > maxVolume) {
-							maxVolume = volume;
-						}
-						if (volume < minVolume) {
-							minVolume = volume;
-						}
-						if (0 == volume) {
-							histogram[0] += 1;
-						} else if (volume < volumeQuota) {
-							histogram[1] += 1;
-						} else {
-							histogram[2] += 1;
-						}
-						clears += next->_stats->_acquireScanListCount;
-						stalls += next->_stats->_workStallCount;
-					}
-				}
-
-				/* get next epoch record and fill it in */
-				MM_EvacuatorHistory::Epoch *epoch = _history.nextEpoch(newEpoch);
-				epoch->gc = worker->getEnvironment()->_scavengerStats._gcCount;
-				epoch->epoch = newEpoch;
-				epoch->duration = omrtime_hires_delta(_history.epochStartTime(currentTimestamp), currentTimestamp, OMRPORT_TIME_DELTA_IN_MICROSECONDS);
-				epoch->survivorAllocationCeiling = _copyspaceAllocationCeiling[MM_Evacuator::survivor];
-				epoch->tenureAllocationCeiling = _copyspaceAllocationCeiling[MM_Evacuator::tenure];
-				epoch->cleared = clears;
-				epoch->stalled = stalls;
-				epoch->survivorCopied = sampledVolumeMetrics[MM_Evacuator::survivor_copy];
-				epoch->tenureCopied = sampledVolumeMetrics[MM_Evacuator::tenure_copy];
-				epoch->scanned = sampledVolumeMetrics[MM_Evacuator::scanned];
-				epoch->sumVolumeOfWork = totalVolume;
-				epoch->minVolumeOfWork = minVolume;
-				epoch->maxVolumeOfWork = maxVolume;
-				for (uintptr_t i = 0; i < 3; i += 1) {
-					epoch->volumeHistogram[i] = histogram[i];
-				}
-				epoch->volumeQuota = volumeQuota;
-			}
-
-			omrthread_monitor_exit(_reporterMutex);
-		}
-	}
-}
-
-void
-MM_EvacuatorController::reportCollectionStats(MM_EnvironmentBase *env)
-{
-#if defined(EVACUATOR_DEBUG)
-	if (MM_Evacuator::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_END)) {
-#endif /* defined(EVACUATOR_DEBUG) */
+	if (_extensions->isEvacuatorEnabled()) {
 		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
-		MM_ScavengerStats *stats = &_extensions->scavengerStats;
-
-		omrtty_printf("%5lu      : contained;", stats->_gcCount);
-		uint64_t contained = 0;
-		for (uintptr_t insideCache = 0; insideCache < 7; insideCache += 1) {
-			contained +=  stats->_copy_distance_counts[insideCache];
-		}
-		omrtty_printf(" %llu %llu %llu", contained, stats->_copy_distance_counts[7], stats->_copy_distance_counts[8]);
-		for (uintptr_t outsideCache = 7; outsideCache < OMR_SCAVENGER_DISTANCE_BINS; outsideCache += 1) {
-			contained +=  stats->_copy_distance_counts[outsideCache];
-		}
-		omrtty_printf(" %llu\n", contained);
-
-		omrtty_printf("%5lu      :log volume;", stats->_gcCount);
-		uintptr_t sumVolume = 0, smallVolume = 0;
-		uintptr_t logSmall = MM_Math::floorLog2(_extensions->evacuatorMaximumInsideCopySize);
-		for (uintptr_t volume = 0; volume < OMR_SCAVENGER_CACHESIZE_BINS; volume += 1) {
-			if (volume < logSmall) {
-				smallVolume += stats->_object_volume_counts[volume];
+		uintptr_t counts[MM_Evacuator::condition_count];
+		memset(counts, 0, sizeof(counts));
+		omrtty_printf("%8lu:conditions;", _extensions->scavengerStats._gcCount);
+		for (uintptr_t metric = 0; metric < MM_Evacuator::condition_states; metric += 1) {
+			uintptr_t conditions = metric;
+			for (uintptr_t condition = 0; (0 < conditions) && (condition < MM_Evacuator::condition_count); condition += 1) {
+				if (1 == (1 & conditions)) {
+					counts[condition] += _aggregateMetrics._conditionMetrics[metric];
+				}
+				conditions >>= 1;
 			}
-			sumVolume += stats->_object_volume_counts[volume];
-			omrtty_printf(" %lu", sumVolume);
 		}
-		double smallRatio = (double)smallVolume / (double)sumVolume;
-		uintptr_t objectCount = stats->_object_volume_counts[OMR_SCAVENGER_CACHESIZE_BINS];
-		omrtty_printf(" %lu %lu %lu %0.3f\n", smallVolume, sumVolume, objectCount, smallRatio);
-
-		omrtty_printf("%5lu      : cachesize;", stats->_gcCount);
-		for (uintptr_t cachesize = 0; cachesize < OMR_SCAVENGER_CACHESIZE_BINS; cachesize += 1) {
-			omrtty_printf(" %llu", stats->_copy_cachesize_counts[cachesize]);
-		}
-		omrtty_printf(" %lx\n", stats->_copy_cachesize_sum);
-
-		omrtty_printf("%5lu      :  worksize;", stats->_gcCount);
-		for (uintptr_t worksize = 0; worksize < OMR_SCAVENGER_DISTANCE_BINS; worksize += 1) {
-			omrtty_printf(" %llu", stats->_work_packetsize_counts[worksize]);
-		}
-		omrtty_printf(" %lx\n", stats->_work_packetsize_sum);
-
-		if (_extensions->isEvacuatorEnabled()) {
-			uintptr_t maxFrame = OMR_MAX(MM_Evacuator::unreachable, _extensions->evacuatorMaximumStackDepth);
-			uintptr_t stackActivations[maxFrame];
-			uintptr_t sumActivations = sumStackActivations(stackActivations, maxFrame);
-			omrtty_printf("%5lu      :     stack;", stats->_gcCount);
-			for (uintptr_t depth = 0; depth < maxFrame; depth += 1) {
-				omrtty_printf(" %lu", stackActivations[depth]);
+		for (uintptr_t condition = 0; condition < MM_Evacuator::condition_count; condition += 1) {
+			if (0 < counts[condition]) {
+				omrtty_printf(" %s:%llu", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition), counts[condition]);
 			}
-			omrtty_printf(" %lu\n", sumActivations);
 		}
-
-		/* present time-related collection metrics in milliseconds */
-		MM_CollectionStatisticsStandard *collectionStats = (MM_CollectionStatisticsStandard *)env->_cycleState->_collectionStatistics;
-		uint64_t startUserTime = (uint64_t)collectionStats->_startProcessTimes._userTime;
-		uint64_t startSystemTime = (uint64_t)collectionStats->_startProcessTimes._systemTime;
-		uint64_t endUserTime = (uint64_t)collectionStats->_endProcessTimes._userTime;
-		uint64_t endSystemTime = (uint64_t)collectionStats->_endProcessTimes._systemTime;
-		double userMillis = (double)(endUserTime - startUserTime) / 1000000.0;
-		double systemMillis = (double)(endSystemTime - startSystemTime) / 1000000.0;
-		double scavengeMillis = (double)omrtime_hires_delta(collectionStats->_startTime, collectionStats->_endTime, OMRPORT_TIME_DELTA_IN_MICROSECONDS) / 1000.0;
-		omrtty_printf("%5lu      : idle time; %lu %lu %lu %lu %7.3f %7.3f %7.3f %7.3f %7.3f %7.3f\n", stats->_gcCount,
-			stats->_acquireScanListCount, stats->_workStallCount, stats->_syncStallCount, stats->_completeStallCount,
-			(double)omrtime_hires_delta(0, stats->_workStallTime, OMRPORT_TIME_DELTA_IN_MICROSECONDS) / 1000.0,
-			(double)omrtime_hires_delta(0, stats->_syncStallTime, OMRPORT_TIME_DELTA_IN_MICROSECONDS) / 1000.0,
-			(double)omrtime_hires_delta(0, stats->_completeStallTime, OMRPORT_TIME_DELTA_IN_MICROSECONDS) / 1000.0,
-			userMillis, systemMillis, scavengeMillis);
-
-		if (!_extensions->isEvacuatorEnabled()) {
-
-			uint64_t copiedBytes = stats->_flipBytes + stats->_hashBytes + stats->_tenureAggregateBytes;
-			uint64_t insideBytes = (copiedBytes > stats->_work_packetsize_sum) ? (copiedBytes - stats->_work_packetsize_sum) : 0;
-			double insideCopied = (0 < copiedBytes) ? ((double)insideBytes / (double)copiedBytes) : 1.0;
-			omrtty_printf("%5lu      :%10s; %lx 0 %0.3f %lx %lx %lx 0\n", stats->_gcCount, !isAborting() ? "end cycle" : "backout",
-					copiedBytes, insideCopied, stats->_tenureAggregateBytes, stats->_flipDiscardBytes, stats->_tenureDiscardBytes);
-
-		} else {
-
-			uint64_t copiedBytes = _aggregateVolumeMetrics[MM_Evacuator::survivor_copy] + _aggregateVolumeMetrics[MM_Evacuator::tenure_copy];
-			uint64_t insideBytes = (copiedBytes > stats->_work_packetsize_sum) ? (copiedBytes - stats->_work_packetsize_sum) : 0;
-			double insideCopied = (0 < copiedBytes) ? ((double)insideBytes / (double)copiedBytes) : 1.0;
-			omrtty_printf("%5lu %2lu   :%10s; %lx %lx %lx %0.3f %lx %lx %lx\n", getEpoch()->gc, getEpoch()->epoch,
-					isAborting() ? "backout" : "end cycle",
-					_aggregateVolumeMetrics[MM_Evacuator::survivor_copy], _aggregateVolumeMetrics[MM_Evacuator::tenure_copy], _aggregateVolumeMetrics[MM_Evacuator::scanned], insideCopied, _finalDiscardedBytes, _finalFlushedBytes, _finalRecycledBytes);
-			if (MM_Evacuator::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_CONDITIONS)) {
-				reportConditionCounts(getEpoch()->gc, getEpoch()->epoch);
-			}
-
-//			Debug_MM_true((_finalDiscardedBytes + _finalFlushedBytes) == (stats->_flipDiscardBytes + stats->_tenureDiscardBytes));
-			if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_EPOCH)) {
-				const MM_EvacuatorHistory::Epoch *lastEpoch = _history.getEpoch();
-				for (uintptr_t epochIndex =  0; epochIndex <= _history.maxEpoch; epochIndex += 1) {
-					MM_EvacuatorHistory::Epoch *epoch = _history.getEpoch(epochIndex);
-					if (_history.isRecorded(epoch)) {
-						uintptr_t totalCopied = epoch->survivorCopied + epoch->tenureCopied;
-						MM_EvacuatorHistory::Epoch *previous = _history.priorEpoch(epoch);
-						uintptr_t deltaScanned = epoch->scanned;
-						uintptr_t deltaCopied = totalCopied;
-						if (epoch > previous) {
-							deltaCopied -= (previous->survivorCopied + previous->tenureCopied);
-							deltaScanned -= previous->scanned;
-						}
-						uintptr_t unscanned = (totalCopied > epoch->scanned) ? (totalCopied - epoch->scanned) : 0;
-						double copyScanRatio = (0 < epoch->scanned) ? ((double)totalCopied / (double)epoch->scanned) : 0.0;
-						double deltaCopyScanRatio = (0 < deltaScanned) ? ((double)deltaCopied / (double)deltaScanned) : 0.0;
-						omrtty_printf("%5lu %2lu  0:     epoch; %6.3f %6.3f %8lx %8lx %8lx %8lx %8lx %8lx %8.3f %0.3f ", epoch->gc, epoch->epoch,
-								copyScanRatio, deltaCopyScanRatio, epoch->survivorCopied, epoch->tenureCopied,	epoch->scanned, unscanned,
-								epoch->survivorAllocationCeiling, epoch->tenureAllocationCeiling,
-								((double)(epoch->duration) / 1000.0), ((double)(epoch->survivorCopied) / (double)_modalSurvivorVolumeMetric));
-						omrtty_printf("%8lx %8lx %8lx %6lx %3lx %3lx %3lx %4lu %3lu\n", epoch->sumVolumeOfWork, epoch->minVolumeOfWork, epoch->maxVolumeOfWork,
-								epoch->volumeQuota, epoch->volumeHistogram[0], epoch->volumeHistogram[1], epoch->volumeHistogram[2], epoch->cleared, epoch->stalled);
+		omrtty_printf(" objects:%llu\n", _aggregateMetrics._volumeMetrics[MM_Evacuator::objects]);
+		for (uintptr_t metric = 0; metric < MM_Evacuator::condition_states; metric += 1) {
+			if (0 < _aggregateMetrics._conditionMetrics[metric]) {
+				omrtty_printf("%8lu:%10llu;", _extensions->scavengerStats._gcCount, _aggregateMetrics._conditionMetrics[metric]);
+				uintptr_t conditions = metric;
+				for (uintptr_t condition = 0; (0 < conditions) && (condition < MM_Evacuator::condition_count); condition += 1) {
+					if (1 == (1 & conditions)) {
+						omrtty_printf(" %s", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition));
 					}
-					if (epoch >= lastEpoch) {
-						break;
-					}
+					conditions >>= 1;
 				}
+				omrtty_printf("\n");
 			}
-
-			/* total copied/scanned byte counts should be equal unless we are aborting */
-			Debug_MM_true4(env, (isAborting() || hasCompletedScan()), "survived+tenured (%lx+%lx)=%lx != %lx scanned\n",
-					_aggregateVolumeMetrics[MM_Evacuator::survivor_copy], _aggregateVolumeMetrics[MM_Evacuator::tenure_copy], copiedBytes, _aggregateVolumeMetrics[MM_Evacuator::scanned]);
-		}
-#if defined(EVACUATOR_DEBUG)
-	}
-#endif /* defined(EVACUATOR_DEBUG) */
-}
-
-void
-MM_EvacuatorController::reportConditionCounts(uintptr_t gc, uintptr_t epoch)
-{
-	uintptr_t conditionCount = MM_Math::floorLog2(MM_Evacuator::conditions_mask + 1);
-	uintptr_t conditionCountTotals[MM_Evacuator::conditions_mask + 1];
-	uintptr_t conditionCountSummary[conditionCount];
-
-	memset(conditionCountSummary, 0, sizeof(conditionCountSummary));
-	memset(conditionCountTotals, 0, sizeof(conditionCountTotals));
-
-	uintptr_t objectCount = 0;
-	for (uintptr_t index = 0; index < _evacuatorCount; index++) {
-		uintptr_t flags = 0;
-		const uintptr_t *conditionFlags = _evacuatorTask[index]->getConditionCounts(&flags);
-		for (uintptr_t flag = 0; flag < flags; flag += 1) {
-			for (uintptr_t condition = 1; condition < conditionCount; condition += 1) {
-				if (0 != (flag & (1 << condition))) {
-					conditionCountSummary[condition] += conditionFlags[flag];
-				}
-			}
-			conditionCountTotals[flag] += conditionFlags[flag];
-			objectCount += conditionFlags[flag];
-		}
-	}
-	conditionCountSummary[0] = conditionCountTotals[0];
-
-	OMRPORT_ACCESS_FROM_OMRVM(_omrVM);
-	omrtty_printf("%5lu %2lu   :conditions;", gc, epoch);
-	for (uintptr_t condition = 0; condition < conditionCount; condition += 1) {
-		omrtty_printf(" %lu", conditionCountSummary[condition]);
-	}
-	omrtty_printf(" %lu\n", objectCount);
-	double percent = (100.0 * (double)conditionCountTotals[0]) / (double)objectCount;
-	omrtty_printf("%10.3f : %4lu %10lu <none>\n", percent, 0, conditionCountTotals[0]);
-	for (uintptr_t flags = 1; flags <= MM_Evacuator::conditions_mask; flags += 1) {
-		if (0 != conditionCountTotals[flags]) {
-			double percent = (100.0 * (double)conditionCountTotals[flags]) / (double)objectCount;
-			omrtty_printf("%10.3f : %4lu %10lu ", percent, flags, conditionCountTotals[flags]);
-			for (uintptr_t condition = 1; condition < MM_Evacuator::conditions_mask; condition <<= 1) {
-				if (0 != (flags & condition)) {
-					omrtty_printf(" %s", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition));
-				}
-			}
-			omrtty_printf("\n");
 		}
 	}
 }
 
 void
-MM_EvacuatorController::printEvacuatorBitmap(MM_EnvironmentBase *env, const char *label, volatile uintptr_t * const bitmap)
+MM_EvacuatorController::printThreads(MM_EnvironmentBase *env)
 {
+	/* NOTE: the cpu_ms metric is currently used only for reporting (here) and aggregate cpu_ms will always be 0 in production builds */
 	OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
-
-	uintptr_t tailMask = 0;
-	uintptr_t bitmapWords = countEvacuatorBitmapWords(&tailMask);
-	omrtty_printf("%s:%lx", label, bitmap[0]);
-	for (uintptr_t map = 1; map < bitmapWords; map += 1) {
-		omrtty_printf(" %lx", bitmap[map]);
+	MM_ScavengerStats *stats = &_extensions->incrementScavengerStats;
+	MM_CollectionStatisticsStandard *collectionStats = (MM_CollectionStatisticsStandard *)env->_cycleState->_collectionStatistics;
+	uintptr_t volume[] = {0, 0, 0, 0, 0};
+	if (_extensions->isEvacuatorEnabled()) {
+		volume[0] = _aggregateMetrics._volumeMetrics[MM_Evacuator::survivor_copy];
+		volume[1] = _aggregateMetrics._volumeMetrics[MM_Evacuator::tenure_copy];
+		volume[2] = _aggregateMetrics._volumeMetrics[MM_Evacuator::scanned];
+		volume[3] = _aggregateMetrics._volumeMetrics[MM_Evacuator::leaf];
+		volume[4] = _aggregateMetrics._volumeMetrics[MM_Evacuator::survivor_discarded] + _aggregateMetrics._volumeMetrics[MM_Evacuator::tenure_discarded];
+	} else {
+		volume[0] = stats->_hashBytes + stats->_flipBytes;
+		volume[1] = stats->_tenureAggregateBytes;
+		volume[2] = volume[0] + volume[1];
+		volume[3] = 0;
+		volume[4] = stats->_flipDiscardBytes + stats->_tenureDiscardBytes;
 	}
-}
-
-uintptr_t
-MM_EvacuatorController::sumStackActivations(uintptr_t *stackActivations, uintptr_t maxFrame)
-{
-	uintptr_t sum = 0;
-	for (uintptr_t i = 0; i < maxFrame; i += 1) {
-		stackActivations[i] = 0;
+	uint64_t elapsedMicros = omrtime_hires_delta(collectionStats->_startTime, collectionStats->_endTime, OMRPORT_TIME_DELTA_IN_MICROSECONDS);
+	uint64_t userNanos = collectionStats->_endProcessTimes._userTime - collectionStats->_startProcessTimes._userTime;
+	uint64_t sysNanos = collectionStats->_endProcessTimes._systemTime - collectionStats->_startProcessTimes._systemTime;
+	double cachePct = 100.0 * ((double)(stats->_copy_distance_counts[0]) / (double)(stats->_copy_distance_counts[0] + stats->_copy_distance_counts[1]));
+	double elapsedMs = (double)omrtime_hires_delta(0, elapsedMicros, OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
+	double aggregateCpuPct = 100.0 * ((double)(userNanos + sysNanos) / (double)(1000 * elapsedMicros));
+	double kbPerMs = (double)(volume[0] + volume[1]) / ((double)1024 * elapsedMs);
+	omrtty_printf("%8lu:    gc end; survivor:%llu tenure:%llu scanned:%llu; pulled:%llu; leaf:%llu; frag:%llu; realms:%0.3f; kb/ms:%0.3f; cache%%:%0.3f; cpu%%:%0.3f; yielded:%llu; switched:%llu\n", _extensions->scavengerStats._gcCount,
+			volume[0], volume[1], volume[2], _aggregateMetrics._threadMetrics[MM_Evacuator::pulled_volume], volume[3], volume[4], elapsedMs, kbPerMs, cachePct, aggregateCpuPct,
+			collectionStats->_endProcessStats._switched - collectionStats->_startProcessStats._switched,
+			collectionStats->_endProcessStats._yielded - collectionStats->_startProcessStats._yielded);
+	omrtty_printf("%8lu:   objects:", _extensions->scavengerStats._gcCount);
+	uintptr_t objectCount = 0;
+	for (uintptr_t bin = 0; bin < OMR_SCAVENGER_OBJECT_BINS; bin += 1) {
+		omrtty_printf(" %lld", stats->_object_volume_counts[bin]);
+		objectCount += stats->_object_volume_counts[bin];
 	}
-	for (uintptr_t evacuator = 0; evacuator < _evacuatorCount; evacuator += 1) {
-		_evacuatorTask[evacuator]->sumStackActivationCounts(stackActivations, maxFrame);
+	omrtty_printf(" %lld %lld\n", objectCount, stats->_object_volume_counts[OMR_SCAVENGER_OBJECT_BINS]);
+	omrtty_printf("%8lu:    arrays:", _extensions->scavengerStats._gcCount);
+	uintptr_t arrayCount = 0;
+	for (uintptr_t bin = 0; bin < MM_Evacuator::array_counters; bin += 1) {
+		omrtty_printf(" %lld", _aggregateMetrics._arrayVolumeCounts[bin]);
+		arrayCount += _aggregateMetrics._arrayVolumeCounts[bin];
 	}
-	for (uintptr_t j = 0; j < maxFrame; j += 1) {
-		sum += stackActivations[j];
+	omrtty_printf(" %lld %lld\n", arrayCount, _aggregateMetrics._arrayVolumeCounts[MM_Evacuator::array_counters]);
+	omrtty_printf("%8lu:copyspaces:", _extensions->scavengerStats._gcCount);
+	for (uintptr_t bin = 0; bin < OMR_SCAVENGER_CACHESIZE_BINS; bin += 1) {
+		omrtty_printf(" %lld", stats->_copy_cachesize_counts[bin]);
 	}
-	return sum;
-}
-
-void
-MM_EvacuatorController::waitToSynchronize(MM_Evacuator *worker, const char *id)
-{
-#if defined(EVACUATOR_DEBUG)
-	Debug_MM_true(!testEvacuatorBit(worker->getWorkerIndex(), _stalledEvacuatorBitmap));
-	Debug_MM_true(!testEvacuatorBit(worker->getWorkerIndex(), _resumingEvacuatorBitmap));
-	if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_CYCLE)) {
-		MM_EnvironmentBase *env = worker->getEnvironment();
-		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
-		omrtty_printf("%5lu %2lu %2lu:      sync; ", getEpoch()->gc, getEpoch()->epoch, worker->getWorkerIndex());
-		printEvacuatorBitmap(env, "stalled", _stalledEvacuatorBitmap);
-		printEvacuatorBitmap(env, "; resuming", _resumingEvacuatorBitmap);
-		omrtty_printf("; flags:%lx; workunit:%lx; %s\n", _evacuatorFlags, worker->getEnvironment()->getWorkUnitIndex(), MM_EvacuatorBase::callsite(id));
+	omrtty_printf(" %llu\n", stats->_copy_cachesize_sum);
+	omrtty_printf("%8lu:workspaces:", _extensions->scavengerStats._gcCount);
+	for (uintptr_t bin = 0; bin < OMR_SCAVENGER_WORKSIZE_BINS; bin += 1) {
+		omrtty_printf(" %lld", stats->_work_packetsize_counts[bin]);
 	}
-#endif /* defined(EVACUATOR_DEBUG) */
-}
-
-void
-MM_EvacuatorController::continueAfterSynchronizing(MM_Evacuator *worker, uint64_t startTime, uint64_t endTime, const char *id)
-{
-#if defined(EVACUATOR_DEBUG)
-	Debug_MM_true(!testEvacuatorBit(worker->getWorkerIndex(), _stalledEvacuatorBitmap));
-	Debug_MM_true(!testEvacuatorBit(worker->getWorkerIndex(), _resumingEvacuatorBitmap));
-	if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_CYCLE)) {
-		MM_EnvironmentBase *env = worker->getEnvironment();
-		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
-		uint64_t waitMicros = omrtime_hires_delta(startTime, endTime, OMRPORT_TIME_DELTA_IN_MICROSECONDS);
-		omrtty_printf("%5lu %2lu %2lu:  continue; ", getEpoch()->gc, getEpoch()->epoch, worker->getWorkerIndex());
-		printEvacuatorBitmap(env, "stalled", _stalledEvacuatorBitmap);
-		printEvacuatorBitmap(env, "; resuming", _resumingEvacuatorBitmap);
-		omrtty_printf("; flags:%lx; micros:%%lx; %s\n", _evacuatorFlags, waitMicros, MM_EvacuatorBase::callsite(id));
+	omrtty_printf(" %llu %llu\n", stats->_work_packetsize_sum, _aggregateMetrics._threadMetrics[MM_Evacuator::pulled_count]);
+	double cpuMs = (double)_aggregateMetrics._threadMetrics[MM_Evacuator::cpu_ms] / (double)1000;
+	double runMs = (double)omrtime_hires_delta(0, _aggregateMetrics._threadMetrics[MM_Evacuator::real_ms], OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
+	double stallMs = (double)omrtime_hires_delta(0, _aggregateMetrics._threadMetrics[MM_Evacuator::stall_ms], OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
+	double waitMs = (double)omrtime_hires_delta(0, _aggregateMetrics._threadMetrics[MM_Evacuator::wait_ms], OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
+	double notifyMs = (double)omrtime_hires_delta(0, _aggregateMetrics._threadMetrics[MM_Evacuator::notify_ms], OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
+	double syncMs = (double)omrtime_hires_delta(0, _aggregateMetrics._threadMetrics[MM_Evacuator::sync_ms], OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
+	double endMs = (double)omrtime_hires_delta(0, _aggregateMetrics._threadMetrics[MM_Evacuator::end_ms], OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
+	double runPct = (100.0 * runMs) / elapsedMs;
+	double cpuPct = (100.0 * cpuMs) / elapsedMs;
+	double stallPct = (100.0 * stallMs) / elapsedMs;
+	double waitPct = (100.0 * waitMs) / elapsedMs;
+	double endPct = (100.0 * (syncMs + endMs)) / elapsedMs;
+	omrtty_printf("%8lu: work time; stall:%llu %0.3f; wait:%llu %0.3f; notify:%llu %0.3f; sync:%llu %0.3f; end:%llu %0.3f; run%%:%0.3f; cpu%%:%0.3f; stall%%:%0.3f; wait%%:%0.3f; end%%:%0.3f\n", _extensions->scavengerStats._gcCount,
+		_aggregateMetrics._threadMetrics[MM_Evacuator::stall_count], stallMs,
+		_aggregateMetrics._threadMetrics[MM_Evacuator::wait_count], waitMs,
+		_aggregateMetrics._threadMetrics[MM_Evacuator::notify_count], notifyMs,
+		_aggregateMetrics._threadMetrics[MM_Evacuator::sync_count], syncMs,
+		_aggregateMetrics._threadMetrics[MM_Evacuator::end_count], endMs,
+		runPct, cpuPct, stallPct, waitPct, endPct);
+	const uintptr_t threads = _dispatcher->threadCount();
+	for (uintptr_t thread = 0; thread < threads; thread += 1) {
+		MM_Evacuator::Metrics *metrics = _evacuatorMetrics[thread];
+		cpuMs = (double)metrics->_threadMetrics[MM_Evacuator::cpu_ms] / (double)1000;
+		runMs = (double)omrtime_hires_delta(0, metrics->_threadMetrics[MM_Evacuator::real_ms], OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
+		stallMs = (double)omrtime_hires_delta(0, metrics->_threadMetrics[MM_Evacuator::stall_ms], OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
+		waitMs = (double)omrtime_hires_delta(0, metrics->_threadMetrics[MM_Evacuator::wait_ms], OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
+		notifyMs = (double)omrtime_hires_delta(0, metrics->_threadMetrics[MM_Evacuator::notify_ms], OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
+		syncMs = (double)omrtime_hires_delta(0, metrics->_threadMetrics[MM_Evacuator::sync_ms], OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
+		endMs = (double)omrtime_hires_delta(0, metrics->_threadMetrics[MM_Evacuator::end_ms], OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
+		runPct = (100.0 * runMs) / elapsedMs;
+		cpuPct = (100.0 * cpuMs) / elapsedMs;
+		stallPct = (100.0 * stallMs) / elapsedMs;
+		waitPct = (100.0 * waitMs) / elapsedMs;
+		endPct = (100.0 * (syncMs + endMs)) / elapsedMs;
+		omrtty_printf("%8lu: thread %2lu; scan:%llu; clear:%llu; stall:%llu; wait:%llu; run%%:%0.3f; cpu%%:%0.3f; stall%%:%0.3f; wait%%:%0.3f; end%%:%0.3f\n", _extensions->scavengerStats._gcCount, thread,
+				metrics->_threadMetrics[MM_Evacuator::scan_count], metrics->_threadMetrics[MM_Evacuator::clearing_count],
+				metrics->_threadMetrics[MM_Evacuator::stall_count], metrics->_threadMetrics[MM_Evacuator::wait_count],
+				runPct, cpuPct, stallPct, waitPct, endPct);
 	}
-#endif /* defined(EVACUATOR_DEBUG) */
+	if (_extensions->isEvacuatorEnabled()) {
+		const uintptr_t groups = threads * threads;
+		const uintptr_t *stalls = &_aggregateMetrics._threadMetrics[MM_Evacuator::stalled];
+		for (uintptr_t group = 0; group < groups; group += 1) {
+			if (0 < stalls[group]) {
+				omrtty_printf("%8lu:%10llu;", _extensions->scavengerStats._gcCount, stalls[group]);
+				uintptr_t bits = group;
+				for (uintptr_t thread = 0; thread < threads; thread += 1) {
+					omrtty_printf(" %c", (1 == (1 & bits)) ? '1' : '0');
+					bits >>= 1;
+				}
+				omrtty_printf("\n");
+			}
+		}
+	}
 }
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 

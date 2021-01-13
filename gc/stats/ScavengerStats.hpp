@@ -34,8 +34,10 @@ class MM_EnvironmentBase;
 
 #include "Math.hpp"
 
-#define OMR_SCAVENGER_DISTANCE_BINS 32
-#define OMR_SCAVENGER_CACHESIZE_BINS 16
+#define OMR_SCAVENGER_DISTANCE_BINS 2
+#define OMR_SCAVENGER_WORKSIZE_BINS 32
+#define OMR_SCAVENGER_CACHESIZE_BINS 32
+#define OMR_SCAVENGER_OBJECT_BINS 16
 
 #define SCAVENGER_FLIP_HISTORY_SIZE 16
 
@@ -87,12 +89,18 @@ public:
 	uintptr_t _aliasToCopyCacheCount;
 	uintptr_t _arraySplitCount;
 	uintptr_t _arraySplitAmount;
-	uintptr_t _workStallCount; /**< The number of times the thread stalled, and subsequently received more work */
+	uintptr_t _workStallCount; /**< The number of times the thread stalled */
+	uintptr_t _workWaitCount; /**< The number of times the thread stalled, and subsequently waited for more work */
 	uintptr_t _completeStallCount; /**< The number of times the thread stalled, and waited for all other threads to complete working */
 	uintptr_t _syncStallCount; /**< The number of times the thread stalled at a sync point */
-	uint64_t _workStallTime; /**< The time, in hi-res ticks, the thread spent stalled waiting to receive more work */
+	uintptr_t _notifyStallCount; /**< The number of times the thread stopped to notify other threads */
+	uint64_t _workStallTime; /**< The time, in hi-res ticks, the thread spent stalled waiting to wait to receive more work */
+	uint64_t _workWaitTime; /**< The time, in hi-res ticks, the thread spent stalled waiting to receive more work */
 	uint64_t _completeStallTime; /**< The time, in hi-res ticks, the thread spent stalled waiting for all other threads to complete working */
 	uint64_t _syncStallTime; /**< The time, in hi-res ticks, the thread spent stalled at a sync point */
+	uint64_t _notifyStallTime; /**< The time, in hi-res ticks, the thread spent notifying other threads */
+	uint64_t _workCpuTime; /**< The amoutof cpu time (user+ sys), in microseconds, the thread spent executing workThreadGrbageCollect() */
+	uint64_t _workRealTime; /**< The amount of cpu time (wall clock), in microseconds, the thread spent executing workThreadGrbageCollect() */
 	uintptr_t _totalDeepStructures; /**<  The number of deep structures that are scanned with priority (number of deepScanOutline function calls) */
 	uintptr_t _totalObjsDeepScanned; /**< The total number of deep structure objects that are special treated (number of copyAndForward with priority)*/
 	uintptr_t _depthDeepestStructure; /**< Length of longest deep structure that is special treated */
@@ -136,8 +144,8 @@ public:
 	uint64_t _leafObjectCount;
 	uint64_t _copy_distance_counts[OMR_SCAVENGER_DISTANCE_BINS];
 	uint64_t _copy_cachesize_counts[OMR_SCAVENGER_CACHESIZE_BINS];
-	uint64_t _work_packetsize_counts[OMR_SCAVENGER_DISTANCE_BINS];
-	uint64_t _object_volume_counts[OMR_SCAVENGER_DISTANCE_BINS+1];
+	uint64_t _work_packetsize_counts[OMR_SCAVENGER_WORKSIZE_BINS];
+	uint64_t _object_volume_counts[OMR_SCAVENGER_OBJECT_BINS+1];
 	uint64_t _copy_cachesize_sum;
 	uint64_t _work_packetsize_sum;
 
@@ -179,6 +187,13 @@ public:
 	}
 	
 	MMINLINE void 
+	addToWorkWaitTime(uint64_t startTime, uint64_t endTime)
+	{
+		_workWaitCount += 1;
+		_workWaitTime += (endTime - startTime);
+	}
+
+	MMINLINE void
 	addToCompleteStallTime(uint64_t startTime, uint64_t endTime)
 	{
 		_completeStallCount += 1;
@@ -192,6 +207,13 @@ public:
 		_syncStallTime += (endTime - startTime);
 	}
 	
+	MMINLINE void
+	addToNotifyStallTime(uint64_t startTime, uint64_t endTime)
+	{
+		_notifyStallCount += 1;
+		_notifyStallTime += (endTime - startTime);
+	}
+
 	/**
 	 * Get the total stall time
 	 * @return the time in hi-res ticks
@@ -199,19 +221,14 @@ public:
 	MMINLINE uint64_t 
 	getStallTime()
 	{
-		return _workStallTime + _completeStallTime + _syncStallTime;
+		return _workStallTime + _notifyStallTime + _completeStallTime + _syncStallTime;
 	}
 #endif /* J9MODRON_TGC_PARALLEL_STATISTICS */
 
 	MMINLINE void
 	countCopyDistance(uintptr_t fromAddr, uintptr_t toAddr)
 	{
-		uintptr_t delta = fromAddr ^ toAddr;
-		uintptr_t bin = MM_Math::floorLog2(delta);
-		if (OMR_SCAVENGER_DISTANCE_BINS <= bin) {
-			bin = OMR_SCAVENGER_DISTANCE_BINS - 1;
-		}
-		_copy_distance_counts[bin] += 1;
+		_copy_distance_counts[(64 > (fromAddr ^ toAddr)) ? 0 : 1] += 1;
 	}
 
 	MMINLINE void
@@ -229,10 +246,10 @@ public:
 	MMINLINE void
 	countWorkPacketSize(uint64_t workPacketSize, uint64_t copyCacheSizeMax)
 	{
-		uint64_t binSize = copyCacheSizeMax / OMR_SCAVENGER_DISTANCE_BINS;
+		uint64_t binSize = copyCacheSizeMax / OMR_SCAVENGER_WORKSIZE_BINS;
 		uint64_t binSlot = workPacketSize / binSize;
-		if (OMR_SCAVENGER_DISTANCE_BINS <= binSlot) {
-			binSlot = OMR_SCAVENGER_DISTANCE_BINS - 1;
+		if (OMR_SCAVENGER_WORKSIZE_BINS <= binSlot) {
+			binSlot = OMR_SCAVENGER_WORKSIZE_BINS - 1;
 		}
 		_work_packetsize_counts[binSlot] += 1;
 		_work_packetsize_sum += workPacketSize;
@@ -241,12 +258,12 @@ public:
 	MMINLINE void
 	countObjectSize(uintptr_t objectSize)
 	{
-		_object_volume_counts[OMR_SCAVENGER_CACHESIZE_BINS] += 1;
+		_object_volume_counts[OMR_SCAVENGER_OBJECT_BINS] += objectSize;
 		uintptr_t bin = MM_Math::floorLog2(objectSize);
-		if (bin >= (OMR_SCAVENGER_CACHESIZE_BINS - 1)) {
-			bin = OMR_SCAVENGER_CACHESIZE_BINS - 1;
+		if (OMR_SCAVENGER_OBJECT_BINS <= bin) {
+			bin = OMR_SCAVENGER_OBJECT_BINS - 1;
 		}
-		_object_volume_counts[bin] += objectSize;
+		_object_volume_counts[bin] += 1;
 	}
 
 	void clear(bool firstIncrement);

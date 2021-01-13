@@ -814,6 +814,41 @@ omrthread_get_process_times(omrthread_process_time_t *processTime)
 }
 
 /**
+ * Calculates the total amount of process i.e system (kernel) and user time in nanoseconds and returns
+ * process context switching stats (which may b returned as 0s if not available per platform).
+ * @param[out] processTime is the address of the structure that the time get stored in.
+ * @param[out] processStats is the address of the structure that the stats get stored in.
+ * @return 0 : successful completion; -1 : Unsupported / not implemented on this platform; -2 : Error occured.
+ */
+intptr_t
+omrthread_get_process_stats(omrthread_process_time_t *processTimes, omrthread_process_stats_t *processStats)
+{
+#if defined(LINUX) || defined(AIXPPC) || defined(OSX)
+	struct rusage rUsage;
+	memset(&rUsage, 0, sizeof(rUsage));
+
+	/* if getrusage() returns successfully, store the time values in processTime.*/
+	if (0 == getrusage(RUSAGE_SELF, &rUsage)) {
+		processTimes->_userTime   = (SEC_TO_NANO_CONVERSION_CONSTANT   * (int64_t)rUsage.ru_utime.tv_sec) +
+								    (MICRO_TO_NANO_CONVERSION_CONSTANT * (int64_t)rUsage.ru_utime.tv_usec);
+		processTimes->_systemTime = (SEC_TO_NANO_CONVERSION_CONSTANT   * (int64_t)rUsage.ru_stime.tv_sec) +
+								    (MICRO_TO_NANO_CONVERSION_CONSTANT * (int64_t)rUsage.ru_stime.tv_usec);
+		processStats->_switched = (intptr_t)rUsage.ru_nivcsw;
+		processStats->_yielded = (intptr_t)rUsage.ru_nvcsw;
+		return 0;
+	} else {
+		/* Error in getrusage */
+		Trc_THR_ThreadGetProcessTimes_getrusageFailed(errno);
+		return -2;
+	}
+#else
+	intptr_t result = omrthread_get_process_times(processTimes);
+	processStats->_switched = 0;
+	processStats->_yielded = 0;
+	return result;
+#endif /* defined(LINUX) || defined(AIXPPC) || defined(OSX) */
+}
+/**
  * Return a monotonically increasing hi resolution clock in nanoseconds.
  * This code is a copy of omrtime_nano_time for Linux and omrtime_hires_clock on Windows
  * from the port library as we cannot call the port functions from the thread library.

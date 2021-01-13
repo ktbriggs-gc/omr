@@ -38,62 +38,6 @@
 #include "ScavengerStats.hpp"
 
 /**
- * A chunk of reserved or unused whitespace. The first two uintptr_t slots are co-opted to
- * record whitespace length in bytes and LOA flag. Instances of this object are invalidated
- * of course when the contained whitespace is overwritten after acquisition. Until then the
- * property functions return valid results.
- */
-class MM_EvacuatorWhitespace : public MM_HeapLinkedFreeHeader
-{
-	/*
-	 * Data members
-	 */
-private:
-	enum { loa = 1 };
-	static const int32_t check = 0x03030303;
-	intptr_t _flags;
-protected:
-public:
-
-	/*
-	 * Function members
-	 */
-private:
-protected:
-public:
-	static MM_EvacuatorWhitespace *
-	whitespace(void *address, uintptr_t length, bool compressed, bool isLOA = false)
-	{
-		Debug_MM_true(0 == (((uintptr_t)address) % sizeof(uintptr_t)));
-		Debug_MM_true(0 == (length % sizeof(uintptr_t)));
-
-		MM_EvacuatorWhitespace *space = (length == 0) ? NULL : (MM_EvacuatorWhitespace *)MM_HeapLinkedFreeHeader::fillWithHoles(address, length, compressed);
-		if (sizeof(MM_EvacuatorWhitespace) <= length) {
-			space->_flags = isLOA ? MM_EvacuatorWhitespace::loa : 0;
-		}
-		Debug_MM_true((NULL == space) || (length == space->length()));
-		return space;
-	}
-
-	uintptr_t
-	length()
-	{
-		uintptr_t length = 0, *next = &_next;
-		while (J9_GC_SINGLE_SLOT_HOLE == (*next & J9_GC_SINGLE_SLOT_HOLE)) {
-			length += sizeof(uintptr_t);
-			next += 1;
-		}
-		return (0 < length) ? length : getSize();
-	}
-
-	bool isLOA() { return (sizeof(MM_EvacuatorWhitespace) <= length()) && (loa == (_flags & loa)); }
-
-	uint8_t *getBase() { return (uint8_t *)this; }
-
-	uint8_t *getEnd() { return getBase() + length(); }
-};
-
-/**
  *  Bounded priority queue of free space, pointer to largest on top at _whitelist[0]. Elements
  *  added at capacity will force a smaller element to be dropped, dropped elements are converted
  *  to holes in the runtime heap.
@@ -107,17 +51,14 @@ private:
 	/* number of elements in whitelist backing array must be (2^N)-1 for some N */
 	static const uintptr_t max_whitelist = 15;
 
-	MM_EvacuatorBase * _evacuator;						/* the owning evacuator instance base class */
+	MM_EvacuatorBase *_evacuator;						/* the owning evacuator instance base class */
 	const MM_EvacuatorBase::Region _region;				/* region containing whitespace */
-	MM_EvacuatorWhitespace *_whitelist[max_whitelist];	/* array of pointers to free space */
+	MM_EvacuatorBase::Whitespace *_whitelist[max_whitelist];/* array of pointers to free space */
 	uintptr_t _count;									/* number of active free space elements in array */
 	uintptr_t _volume;									/* current sum of bytes available as whitespace */
-	uintptr_t _discarded;								/* cumulative sum of bytes discarded as heap holes */
-	uintptr_t _flushed;									/* cumulative sum of bytes flushed as heap holes */
-	uintptr_t _recycled;								/* cumulative sum of bytes recycled into memory pool */
 	MM_MemorySubSpace *_subspace;						/* memory subspace receives discarded fragments */
-	MM_MemoryPoolAddressOrderedList *_memoryPool;		/* HACK: this assumes AOL memory pool */
-	MM_ScavengerStats *_stats;							/* pointer to _env->_scavengerStats */
+	MM_MemoryPoolAddressOrderedList * _memoryPool;		/* this assumes AOL memory pool */
+	MM_ScavengerStats * _stats;							/* pointer to _env->_scavengerStats */
 
 protected:
 public:
@@ -127,25 +68,25 @@ public:
  */
 private:
 	/* left and right inferiors and superior of element n -- up(0) is undefined */
-	uintptr_t left(uintptr_t n);
-	uintptr_t right(uintptr_t n);
-	uintptr_t up(uintptr_t n);
+	MMINLINE uintptr_t left(uintptr_t n) const;
+	MMINLINE uintptr_t right(uintptr_t n) const;
+	MMINLINE uintptr_t up(uintptr_t n) const;
 
 	/* reorder in tree */
-	void siftDown();
-	void siftUp(uintptr_t bottom);
+	MMINLINE void siftDown();
+	MMINLINE void siftUp(uintptr_t bottom);
 
 	/* comparator for free space pointers in array */
-	bool lt(uintptr_t a, uintptr_t b);
+	MMINLINE bool lt(uintptr_t a, uintptr_t b) const;
 	/* swap free space pointers in array */
-	void swap(uintptr_t a, uintptr_t b);
+	MMINLINE void swap(uintptr_t a, uintptr_t b);
 
 	/* discard small whitespace from the bottom of the tree */
-	void discard(MM_EvacuatorWhitespace *discard, bool flushing = false);
+	MMINLINE void discard(MM_EvacuatorBase::Whitespace *discard, bool flushing = false);
 
 #if defined(EVACUATOR_DEBUG)
 	bool le(uintptr_t a, uintptr_t b);
-	void debug(MM_EvacuatorWhitespace *whitespace, const char* op);
+	void debug(MM_EvacuatorBase::Whitespace *whitespace, const char* op);
 #endif /* defined(EVACUATOR_DEBUG) */
 
 protected:
@@ -170,10 +111,13 @@ public:
 		return whitelist;
 	}
 
+	/* evacuator is effectively const but cannot be set when array inititalizer is called from evacuator constructor*/
+	void evacuator(MM_EvacuatorBase *evacuator) { _evacuator = evacuator; }
+
 	/**
 	 * Get the length of largest whitespace at top of whitelist
 	 */
-	uintptr_t top() { return (0 < _count) ? _whitelist[0]->length() : 0; }
+	uintptr_t top() const { return (0 < _count) ? _whitelist[0]->length() : 0; }
 
 	/**
 	 * Takes largest whitespace from top and sifts down a small one from end of list to restore largest on top
@@ -182,47 +126,7 @@ public:
 	 * @param swap optional pointer to whitespace with size < length to swap into whitelist
 	 * @return whitespace with required capacity (length) or NULL if nothing available
 	 */
-	MM_EvacuatorWhitespace *
-	top(uintptr_t length, MM_EvacuatorWhitespace *swap = NULL)
-	{
-		Debug_MM_true((NULL == swap) || (swap->length() < length));
-
-		/* try to take whitespace from the top of the whitelist */
-		MM_EvacuatorWhitespace * const whitespace = ((0 < _count) && (_whitelist[0]->length() >= length)) ? _whitelist[0] : NULL;
-		if (NULL != whitespace) {
-
-			/* discard unviable residual whitespace */
-			if ((NULL != swap) && (MM_EvacuatorBase::min_reusable_whitespace >= swap->length())) {
-				discard(swap);
-				swap = NULL;
-			}
-
-			/* detach whitespace from whitelist */
-			_volume -= whitespace->length();
-
-			/* swap residual whitespace into top and sift it down */
-			if (NULL != swap) {
-				_volume += swap->length();
-				_whitelist[0] = swap;
-			} else {
-				_count -= 1;
-				_whitelist[0] = _whitelist[_count];
-				_whitelist[_count] = NULL;
-			}
-			siftDown();
-
-#if defined(EVACUATOR_DEBUG)
-			verify();
-			debug(whitespace, "-white");
-#endif /* defined(EVACUATOR_DEBUG) */
-		} else {
-
-			/* add residual */
-			add(swap);
-		}
-
-		return whitespace;
-	}
+	MM_EvacuatorBase::Whitespace *top(uintptr_t length, MM_EvacuatorBase::Whitespace *swap = NULL);
 
 	/**
 	 * Tries to add a new free space element and sift it up the queue. It will be discarded
@@ -230,134 +134,22 @@ public:
 	 *
 	 * @param (nullable) whitespace points to head of free space to add
 	 */
-	void
-	add(MM_EvacuatorWhitespace *whitespace)
-	{
-		if (NULL == whitespace) {
-			return;
-		}
-
-		/* presume whitespace too small to add */
-		MM_EvacuatorWhitespace *displaced = whitespace;
-		uintptr_t const length = (NULL != displaced) ? displaced->length() : 0;
-
-		if (MM_EvacuatorBase::min_reusable_whitespace < length) {
-			Debug_MM_true((MM_EvacuatorBase::tenure == _region) == _evacuator->getEnvironment()->getExtensions()->isOld((omrobjectptr_t)whitespace));
-
-			/* append whitespace or displace a leaf from the bottom of the pile */
-			uintptr_t leaf = _count;
-			if (max_whitelist == leaf) {
-
-				/* whitelist is full -- walk whitelist array from midpoint to end, displace smallest leaf smaller than whitespace (or not) */
-				uintptr_t minLeaf = 0, minLength = ~(uintptr_t)0;
-				for (leaf -= 1; (max_whitelist >> 1) < leaf; leaf -= 1) {
-					if (_whitelist[leaf]->length() < minLength) {
-						minLength = _whitelist[leaf]->length();
-						minLeaf = leaf;
-					}
-				}
-				leaf = (0 != minLeaf) ? minLeaf : max_whitelist;
-			}
-
-			/* if new whitespace was not too small to add, append and sift it up the heap */
-			if (leaf < max_whitelist) {
-
-				 if (leaf < _count) {
-				 	displaced = _whitelist[leaf];
-					_volume -= displaced->length();
-				} else {
-					displaced = NULL;
-					_count += 1;
-				}
-				_whitelist[leaf] = whitespace;
-				_volume += length;
-				siftUp(leaf);
-
-#if defined(EVACUATOR_DEBUG)
-				debug(whitespace, "+white");
-#endif /* defined(EVACUATOR_DEBUG) */
-			}
-		}
-
-		/* discard any displacement */
-		if (NULL != displaced) {
-			discard(displaced);
-		}
-
-#if defined(EVACUATOR_DEBUG)
-		verify();
-#endif /* defined(EVACUATOR_DEBUG) */
-	}
+	void add(MM_EvacuatorBase::Whitespace *whitespace);
 
 	/**
 	 * Discards (recycles or fills with holes) all whitespace in current whitelist.
 	 */
-	void
-	flush()
-	{
-		MM_EvacuatorWhitespace *whitespace = top(0);
+	void flush();
 
-		while (NULL != whitespace) {
-			Debug_MM_true(MM_EvacuatorBase::min_reusable_whitespace < whitespace->length());
-			discard(whitespace, true);
-			whitespace = top(0);
-		}
-
-		Debug_MM_true((0 == _count) && (0 == _volume));
-	}
+	/**
+	 * Binds survivor/tenure memory subspace to whitelist
+	 */
+	void reset(MM_MemorySubSpace *subspace);
 
 	/**
 	 * Returns the number of whitespace elements in the list
 	 */
 	uintptr_t getSize() const { return _count; }
-
-	/**
-	 * Returns the number of whitespace bytes discarded (filled with holes)
-	 */
-	uintptr_t getDiscarded() { uintptr_t  discarded = _discarded; _discarded = 0; return discarded; }
-
-	/**
-	 * Returns the number of whitespace bytes discarded (filled with holes)
-	 */
-	uintptr_t getFlushed() { uintptr_t  flushed = _flushed; _flushed = 0; return flushed; }
-
-	/**
-	 * Returns the number of whitespace bytes discarded (filled with holes)
-	 */
-	uintptr_t getRecycled() { uintptr_t  recycled = _recycled; _recycled = 0; return recycled; }
-
-	/**
-	 * Binds memory subspace and region to whitelist (region is effectively const but is unknow
-	 */
-	void
-	reset(MM_MemorySubSpace *subspace)
-	{
-#if defined(EVACUATOR_DEBUG)
-		if (MM_EvacuatorBase::tenure != _region) {
-			Debug_MM_true(0 == (_discarded + _flushed + _recycled));
-			for (uintptr_t i = 0; i < max_whitelist; i++) {
-				Debug_MM_true(NULL == _whitelist[i]);
-			}
-		} else {
-			/* tenure whitespace is retained between cycles, flushed before global gc and on collector shutdown */
-			Debug_MM_true((0 < _count) || (0 == _flushed));
-			for (uintptr_t i = 0; i < _count; i += 1) {
-				Debug_MM_true(MM_EvacuatorBase::min_reusable_whitespace < _whitelist[i]->length());
-			}
-		}
-#endif /* defined(EVACUATOR_DEBUG) */
-
-		/* discarded/flushed/recycled counters are reset at end of cycle */
-		_subspace = subspace;
-		_memoryPool = (MM_MemoryPoolAddressOrderedList *)_subspace->getMemoryPool();
-		_stats = &_evacuator->getEnvironment()->_scavengerStats;
-
-		Debug_MM_true((MM_EvacuatorBase::survivor != _region) || ((0 == _count) && (0 == _volume)));
-		Debug_MM_true(sizeof(MM_EvacuatorWhitespace) <= _evacuator->getEnvironment()->getObjectAlignmentInBytes());
-	}
-
-	/* evacuator is effectively const but cannot be set in array constructor */
-	void evacuator(MM_EvacuatorBase *evacuator) { _evacuator = evacuator; }
 
 	/**
 	 * Constructor
@@ -368,9 +160,6 @@ public:
 		, _region(region)
 		, _count(0)
 		, _volume(0)
-		, _discarded(0)
-		, _flushed(0)
-		, _recycled(0)
 		, _subspace(NULL)
 		, _memoryPool(NULL)
 		, _stats(NULL)

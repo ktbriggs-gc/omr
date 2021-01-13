@@ -35,7 +35,19 @@ void
 MM_ParallelScavengeTask::run(MM_EnvironmentBase *envBase)
 {
 	MM_EnvironmentStandard *env = MM_EnvironmentStandard::getEnvironment(envBase);
+	env->setEvacuator(NULL, _collector->getEvacuatorMetrics(env->getSlaveID()));
+	memset((void*)env->getMetrics(), 0, sizeof(MM_Evacuator::Metrics));
 	_collector->workThreadGarbageCollect(env);
+}
+
+void
+MM_ParallelScavengeTask::complete(MM_EnvironmentBase *envBase)
+{
+	MM_ParallelTask::complete(envBase);
+	MM_EnvironmentStandard *env = MM_EnvironmentStandard::getEnvironment(envBase);
+	if (env->isMasterThread()) {
+		_collector->aggregateEvacuatorMetrics(env);
+	}
 }
 
 void
