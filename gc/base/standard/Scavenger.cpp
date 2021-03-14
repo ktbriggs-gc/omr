@@ -581,8 +581,7 @@ MM_Scavenger::reportScavengeEnd(MM_EnvironmentStandard *env, bool lastIncrement)
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 	Debug_MM_true(!_extensions->isEvacuatorEnabled() || (_dispatcher->threadCount() == getEvacuatorThreadCount()));
 	if (MM_Evacuator::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_END)) {
-		printThreads(env);
-		printConditions(env);
+		printMetrics(env);
 	}
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 }
@@ -2742,7 +2741,7 @@ MM_Scavenger::scavengeRememberedSetOverflow(MM_EnvironmentStandard *env)
 			if (!_extensions->isEvacuatorEnabled()) {
 				scavengeRememberedObject(env, objectPtr);
 			} else {
-				env->getEvacuator()->evacuateRememberedObject(objectPtr);
+				env->getEvacuator()->scanRememberedObject(objectPtr);
 			}
 		}
 
@@ -3032,9 +3031,9 @@ MM_Scavenger::scavengeRememberedSetList(MM_EnvironmentStandard *env)
 				bool shouldBeRemembered = false;
 				if (_extensions->isEvacuatorEnabled()) {
 					/* evacuator does not split remembered arrays -- these are generally less dense and are scanned early in gc */
-					shouldBeRemembered = env->getEvacuator()->evacuateRememberedObject(objectPtr);
+					shouldBeRemembered = env->getEvacuator()->scanRememberedObject(objectPtr);
 				} else {
-					/* scavenger splits remembered arrays and remembered state not determined here so pass remembered set slot pointer */
+					/* scavenger splits remembered arrays and remembered state not completely determined here so pass remembered set slot pointer */
 					shouldBeRemembered = scavengeObjectSlots(env, NULL, objectPtr, GC_ObjectScanner::scanRoots, slotPtr);
 					/* split segments scanned later will clear deferred removal flag from remembered set slot */
 					if (_extensions->objectModel.hasIndirectObjectReferents((CLI_THREAD_TYPE*)env->getLanguageVMThread(), objectPtr)) {

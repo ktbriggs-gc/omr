@@ -118,81 +118,11 @@
 
 class MM_EnvironmentStandard;
 
+/**
+ * Evacuator base class exposes evacuator features accessible to worklist and whitelist.
+ */
 class MM_EvacuatorBase : public MM_BaseNonVirtual
 {
-/**
- * Base metrics (declarations required to define inner Metrics class)
- */
-public:
-	/* Enumeration of stack volume metrics: bytes copied inside, outside, bytes scanned */
-	typedef enum VolumeMetric {
-		  survivor_copy		/* bytes copied to survivor */
-		, tenure_copy		/* bytes copied to tenure */
-		, scanned			/* bytes scanned in survivor or tenure */
-		, leaf				/* bytes not scanned in primitive objects */
-		, objects			/* number of objects copied/scanned */
-		, survivor_recycled	/* number of bytes of recycled survivor whitespace */
-		, tenure_recycled	/* number of bytes of recycled tenure whitespace */
-		, survivor_discarded/* number of bytes discarded as unusable survivor whitespace */
-		, tenure_discarded	/* number of bytes discarded as unusable tenure whitespace */
-		, volume_metrics	/* upper bound for volume metrics enum */
-		, array_counters = OMR_SCAVENGER_OBJECT_BINS
-	} VolumeMetric;
-
-	/* Enumeration of thread metrics: wait/sync/end counts/times; 256 counters for 8x8 stall map combinations (up to 8 threads) */
-	typedef enum ThreadMetric {
-		  cpu_ms			/* cpu time thread spent in workThreadGarbasgeCollect() */
-		, real_ms			/* total time thread spent in workThreadGarbasgeCollect() */
-		, scan_count		/* identity count incremented by 1 each time evacuator enters collective heap scan */
-		, pulled_count		/* number of workspaces pulled from other threads */
-		, pulled_volume		/* volume of workspaces pulled from other threads */
-		, clearing_count	/* identity count incremented by 1 each time evacuator enters collective clearing scan */
-		, stall_count		/* number of times thread ran dry of local work and had to poll others for work */
-		, stall_ms			/* time spent with thread waiting controller mutex to enable polling */
-		, wait_count		/* number of times thread stopped to wait on the controller mutex for notification of work/end */
-		, wait_ms			/* time spent with thread waiting on the controller mutex for notification of work/end */
-		, notify_count		/* number of times thread notified stalled threads of work */
-		, notify_ms			/* time spent with thread waiting notify stalled threads of work */
-		, sync_count		/* number of times thread stopped to sync with other threads */
-		, sync_ms			/* time spent with thread waiting to sync with other threads */
-		, end_count			/* number of times thread stalled to wait for other threads to end heap scan */
-		, end_ms			/* time spent with thread waiting to wait for other threads to end heap scan  */
-		, stalled			/* base for 256 counters for 8x8 stall map */
-		, stall_map = 256
-		, thread_metrics = stalled + stall_map
-	} ThreadMetric;
-
-	/* Enumeration of conditions that relate to evacuator operation (superset of evacuatorScanOptions */
-	typedef enum ConditionFlag {
-		  stack_overflow = 1			/* forcing outside copy and minimal work release threshold while winding down stack after stack overflow */
-		, survivor_tail_fill = 2		/* forcing outside copy to fill survivor outside copyspace remainder */
-		, tenure_tail_fill = 4			/* forcing outside copy to fill tenure outside copyspace remainder */
-		, stall = 8						/* forcing minimal work release threshold while distributing outside copy to stalled evacuators */
-		, breadth_first_roots = 16		/* forcing outside copy for root objects */
-		, scan_remembered = 32			/* this is raised while scanning the remembered set */
-		, scan_roots = 64				/* this is raised while scanning the root set */
-		, scan_worklist = 128			/* this is raised while scanning the worklist */
-		, scan_clearable = 256			/* this is raised while delegating to clearing stages */
-		, indexable_object = 512		/* forcing outside copy for a pointer array object */
-		, breadth_first_always = 1024	/* forcing outside copy for all objects all the time */
-		, conditions_mask = 2047		/* bit mask covering above flags */
-		, condition_states = 2048		/* number of possible condition combinations */
-		, condition_count = 11			/* number of conditions */
-		, initial_mask = (0)
-		, options_mask = (breadth_first_roots | breadth_first_always)
-		, outside_mask = (options_mask)
-	} ConditionFlag;
-
-	/* Evacuator metrics store. All metrics are additive across threads and are aggregated when evacuators exit rendezvous with controller. */
-	typedef struct Metrics {
-		uintptr_t _volumeMetrics[volume_metrics];			/* cumulative numbers of bytes copied out of evacuation semispace and scanned in survivor or tenure space */
-		uintptr_t _arrayVolumeCounts[array_counters + 1];	/* array volume histogram indexed by log2(array-byte-size) + total array volume */
-		uintptr_t _conditionMetrics[condition_states]; 		/* counters for condition state per evacuated object */
-		uint64_t _threadMetrics[thread_metrics]; 			/* counters for thread wait counts and times and stalled thread map */
-		ThreadMetric _lastMonitorMetric;					/* stall/wait_count metric recorded with last omr_monitor_enter/wait() call */
-		uint64_t _lastMonitorTime;							/* holds clock time delta for last omr_monitor_enter/wait() call */
-	} Metrics;
-
 /**
  * Data members
  */
@@ -226,7 +156,6 @@ protected:
 	/* lower and upper bounds for nursery semispaces and tenure space (may be updated from other thread allocating whitespace) */
 	uint8_t *_heapBounds[3][2];
 
-	Metrics *_metrics;				/* per thread volume/thread/condition metrics */
 public:
 	/**
 	 * Whitespace represents a contiguous range of reserved and unused heap/RAM as a heap linked free header
@@ -311,7 +240,76 @@ public:
 		, regions = 3				/* number of heap regions */
 	} Region;
 
-	/* Minimal size of scan stack -- a value of 1 forces breadth first scanning */
+	/* Enumeration of stack volume metrics: bytes copied inside, outside, bytes scanned */
+	typedef enum VolumeMetric {
+		  survivor_copy		/* bytes copied to survivor */
+		, tenure_copy		/* bytes copied to tenure */
+		, scanned			/* bytes scanned in survivor or tenure */
+		, leaf				/* bytes not scanned in primitive objects */
+		, objects			/* number of objects copied/scanned */
+		, survivor_recycled	/* number of bytes of recycled survivor whitespace */
+		, tenure_recycled	/* number of bytes of recycled tenure whitespace */
+		, survivor_discarded/* number of bytes discarded as unusable survivor whitespace */
+		, tenure_discarded	/* number of bytes discarded as unusable tenure whitespace */
+		, volume_metrics	/* upper bound for volume metrics enum */
+		, array_counters = OMR_SCAVENGER_OBJECT_BINS
+	} VolumeMetric;
+
+	/* Enumeration of thread metrics: wait/sync/end counts/times; 256 counters for 8x8 stall map combinations (up to 8 threads) */
+	typedef enum ThreadMetric {
+		  cpu_ms			/* cpu time thread spent in workThreadGarbasgeCollect() */
+		, real_ms			/* total time thread spent in workThreadGarbasgeCollect() */
+		, scan_count		/* identity count incremented by 1 each time evacuator enters collective heap scan */
+		, pulled_count		/* number of workspaces pulled from other threads */
+		, pulled_volume		/* volume of workspaces pulled from other threads */
+		, clearing_count	/* identity count incremented by 1 each time evacuator enters collective clearing scan */
+		, stall_count		/* number of times thread ran dry of local work and had to poll others for work */
+		, stall_ms			/* time spent with thread waiting controller mutex to enable polling */
+		, wait_count		/* number of times thread stopped to wait on the controller mutex for notification of work/end */
+		, wait_ms			/* time spent with thread waiting on the controller mutex for notification of work/end */
+		, notify_count		/* number of times thread notified stalled threads of work */
+		, notify_ms			/* time spent with thread waiting notify stalled threads of work */
+		, sync_count		/* number of times thread stopped to sync with other threads */
+		, sync_ms			/* time spent with thread waiting to sync with other threads */
+		, end_count			/* number of times thread stalled to wait for other threads to end heap scan */
+		, end_ms			/* time spent with thread waiting to wait for other threads to end heap scan  */
+		, stalled			/* base for 256 counters for 8x8 stall map */
+		, stall_map = 256
+		, thread_metrics = stalled + stall_map
+	} ThreadMetric;
+
+	/* Enumeration of conditions that relate to evacuator operation (superset of evacuatorScanOptions */
+	typedef enum ConditionFlag {
+		  stack_overflow = 1			/* forcing outside copy and minimal work release threshold while winding down stack after stack overflow */
+		, survivor_tail_fill = 2		/* forcing outside copy to fill survivor outside copyspace remainder */
+		, tenure_tail_fill = 4			/* forcing outside copy to fill tenure outside copyspace remainder */
+		, stall = 8						/* forcing minimal work release threshold while distributing outside copy to stalled evacuators */
+		, breadth_first_roots = 16		/* forcing outside copy for root objects */
+		, scan_remembered = 32			/* this is raised while scanning the remembered set */
+		, scan_roots = 64				/* this is raised while scanning the root set */
+		, scan_worklist = 128			/* this is raised while scanning the worklist */
+		, scan_clearable = 256			/* this is raised while delegating to clearing stages */
+		, indexable_object = 512		/* forcing outside copy for a pointer array object */
+		, breadth_first_always = 1024	/* forcing outside copy for all objects all the time */
+		, conditions_mask = 2047		/* bit mask covering above flags */
+		, condition_states = 2048		/* number of possible condition combinations */
+		, condition_count = 11			/* number of conditions */
+		, initial_mask = (0)
+		, options_mask = (breadth_first_roots | breadth_first_always)
+		, outside_mask = (options_mask)
+	} ConditionFlag;
+
+	/* Evacuator metrics store. All metrics are additive across threads and are aggregated when evacuators exit rendezvous with controller. */
+	typedef struct Metrics {
+		uintptr_t _volumeMetrics[volume_metrics];			/* cumulative numbers of bytes copied out of evacuation semispace and scanned in survivor or tenure space */
+		uintptr_t _arrayVolumeCounts[array_counters + 1];	/* array volume histogram indexed by log2(array-byte-size) + total array volume */
+		uintptr_t _conditionMetrics[condition_states]; 		/* counters for condition state per evacuated object */
+		uint64_t _threadMetrics[thread_metrics]; 			/* counters for thread wait counts and times and stalled thread map */
+		ThreadMetric _lastMonitorMetric;					/* stall/wait_count metric recorded with last omr_monitor_enter/wait() call */
+		uint64_t _lastMonitorTime;							/* holds clock time delta for last omr_monitor_enter/wait() call */
+	} Metrics;
+
+	/* minimum size of scan stack -- a value of 1 forces breadth first copying */
 	static const uintptr_t min_scan_stack_depth = 1;
 
 	/* modal upper bound for allowing object copy to inside copyspace */
@@ -344,11 +342,11 @@ public:
 	/* smallest allowable setting for work release threshold overrides controller's minimum workspace size */
 	static const uintptr_t min_workspace_release = min_workspace_size;
 
-	/* bit mask for clearing classification bits from condition flags *//* number of bits to shift object classification bits into condition flags */
+	/* number of bits to shift object classification bits into condition flags */
 	static const uintptr_t classification_shift = 9;
 
-	/* bit mask for clearing classification bits from condition flags */
-	static const uintptr_t classification_mask = (1 << condition_count) - 1;
+	/* per thread volume/thread/condition metrics */
+	Metrics *_metrics;
 
 /**
  * Function members
@@ -475,7 +473,7 @@ public:
 	static uintptr_t
 	selectedScanOptions(MM_GCExtensionsBase *extensions)
 	{
-		/* conditions that are not optonal or optional and not selected are censored; any other condition may be set at runtime */
+		/* conditions that are not optional or optional and not selected are censored; any other condition may be set at runtime */
 		extensions->evacuatorScanOptions &= options_mask;
 
 		/* minimum stack depth forces breadth-first always and breadth-first always forces breadth-first roots */
@@ -484,7 +482,7 @@ public:
 			extensions->evacuatorMaximumStackDepth = min_scan_stack_depth;
 		}
 
-		Debug_MM_true((extensions->evacuatorMaximumStackDepth <= min_scan_stack_depth) == (0 != (extensions->evacuatorScanOptions & breadth_first_always)))
+		Debug_MM_true((extensions->evacuatorMaximumStackDepth <= min_scan_stack_depth) == (0 != (extensions->evacuatorScanOptions & breadth_first_always)));
 		return extensions->evacuatorScanOptions;
 	}
 

@@ -66,7 +66,7 @@ MM_EvacuatorController::initialize(MM_EnvironmentBase *env)
 {
 	bool result = true;
 
-	/* evacuator model is not instrumented for concurrent scavenger */
+	/* evacuator model is not integrated with concurrent scavenger */
 	Assert_MM_true(!_extensions->isEvacuatorEnabled() || !_extensions->isConcurrentScavengerEnabled());
 
 	if (_extensions->isEvacuatorEnabled()) {
@@ -212,10 +212,12 @@ MM_EvacuatorController::flushTenureWhitespace(bool shutdown)
 				volumeMetrics[MM_Evacuator::tenure_recycled] = 0;
 			}
 		}
+#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 		if (MM_EvacuatorBase::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_END)) {
 			OMRPORT_ACCESS_FROM_OMRVM(_omrVM);
 			omrtty_printf("%10s; tenure; discarded:%llu; recycled:%llu\n", (shutdown ? "finalize" : "global gc"), discarded, recycled);
 		}
+#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 	}
 }
 
@@ -287,7 +289,7 @@ MM_EvacuatorController::bindWorker(MM_EnvironmentStandard *env)
 		Assert_MM_true(NULL != _evacuatorTask[workerIndex]);
 	}
 
-	/* the number of dispatched threads must be stable at this point and each thread will initialize the following dependent items identically */
+	/* heap layout and number of dispatched threads must be stable at this point and each thread will initialize the following dependent items identically */
 	_evacuatorCount = env->_currentTask->getThreadCount();
 
 	/* set upper bound for tlh allocation size is indexed by outside region -- reduce these for small region spaces */
@@ -353,21 +355,17 @@ MM_EvacuatorController::getWorkDistributionQuota() const
 void
 MM_EvacuatorController::notifyOfWork(MM_Evacuator *evacuator)
 {
-	/* only one notification is required if >1 fat evacutors have distributable work and >0 evacuators are waiting for work */
-	if (0 < evacuator->getDistributableVolumeOfWork()) {
-		VM_AtomicSupport::readBarrier();
-		if (1 == VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 0)) {
-			uint64_t time = knock(evacuator->getEnvironment(), _workMutex);
-			if (0 < time) {
-				if (0 < evacuator->getDistributableVolumeOfWork()) {
-					omrthread_monitor_notify(_workMutex);
-				}
-				leave(evacuator->getEnvironment(), _workMutex, time, MM_Evacuator::notify_count);
-			}
-			if ((0 == time) || (0 == evacuator->getDistributableVolumeOfWork())) {
+	/* only one notification is required if >1 fat evacutors have distributable work and >0 evacuators are starving for work */
+	VM_AtomicSupport::readBarrier();
+	if (isNotifyOfWorkPending() && (0 < evacuator->getDistributableVolumeOfWork())) {
+		uint64_t time = knock(evacuator->getEnvironment(), _workMutex);
+		if (0 < time) {
+			if (isNotifyOfWorkPending() && (0 < evacuator->getDistributableVolumeOfWork())) {
+				omrthread_monitor_notify(_workMutex);
 				VM_AtomicSupport::readBarrier();
-				VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 0, 1);
+				VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 0);
 			}
+			leave(evacuator->getEnvironment(), _workMutex, time, MM_Evacuator::notify_count);
 		}
 	}
 }
@@ -791,46 +789,7 @@ MM_EvacuatorController::clearEvacuatorBit(uintptr_t evacuatorIndex, volatile uin
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 void
-MM_EvacuatorController::printConditions(MM_EnvironmentBase *env)
-{
-	if (_extensions->isEvacuatorEnabled()) {
-		OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
-		uintptr_t counts[MM_Evacuator::condition_count];
-		memset(counts, 0, sizeof(counts));
-		omrtty_printf("%8lu:conditions;", _extensions->scavengerStats._gcCount);
-		for (uintptr_t metric = 0; metric < MM_Evacuator::condition_states; metric += 1) {
-			uintptr_t conditions = metric;
-			for (uintptr_t condition = 0; (0 < conditions) && (condition < MM_Evacuator::condition_count); condition += 1) {
-				if (1 == (1 & conditions)) {
-					counts[condition] += _aggregateMetrics._conditionMetrics[metric];
-				}
-				conditions >>= 1;
-			}
-		}
-		for (uintptr_t condition = 0; condition < MM_Evacuator::condition_count; condition += 1) {
-			if (0 < counts[condition]) {
-				omrtty_printf(" %s:%llu", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition), counts[condition]);
-			}
-		}
-		omrtty_printf(" objects:%llu\n", _aggregateMetrics._volumeMetrics[MM_Evacuator::objects]);
-		for (uintptr_t metric = 0; metric < MM_Evacuator::condition_states; metric += 1) {
-			if (0 < _aggregateMetrics._conditionMetrics[metric]) {
-				omrtty_printf("%8lu:%10llu;", _extensions->scavengerStats._gcCount, _aggregateMetrics._conditionMetrics[metric]);
-				uintptr_t conditions = metric;
-				for (uintptr_t condition = 0; (0 < conditions) && (condition < MM_Evacuator::condition_count); condition += 1) {
-					if (1 == (1 & conditions)) {
-						omrtty_printf(" %s", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition));
-					}
-					conditions >>= 1;
-				}
-				omrtty_printf("\n");
-			}
-		}
-	}
-}
-
-void
-MM_EvacuatorController::printThreads(MM_EnvironmentBase *env)
+MM_EvacuatorController::printMetrics(MM_EnvironmentBase *env)
 {
 	/* NOTE: the cpu_ms metric is currently used only for reporting (here) and aggregate cpu_ms will always be 0 in production builds */
 	OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
@@ -934,6 +893,37 @@ MM_EvacuatorController::printThreads(MM_EnvironmentBase *env)
 				for (uintptr_t thread = 0; thread < threads; thread += 1) {
 					omrtty_printf(" %c", (1 == (1 & bits)) ? '1' : '0');
 					bits >>= 1;
+				}
+				omrtty_printf("\n");
+			}
+		}
+		uintptr_t counts[MM_Evacuator::condition_count];
+		memset(counts, 0, sizeof(counts));
+		omrtty_printf("%8lu:conditions;", _extensions->scavengerStats._gcCount);
+		for (uintptr_t metric = 0; metric < MM_Evacuator::condition_states; metric += 1) {
+			uintptr_t conditions = metric;
+			for (uintptr_t condition = 0; (0 < conditions) && (condition < MM_Evacuator::condition_count); condition += 1) {
+				if (1 == (1 & conditions)) {
+					counts[condition] += _aggregateMetrics._conditionMetrics[metric];
+				}
+				conditions >>= 1;
+			}
+		}
+		for (uintptr_t condition = 0; condition < MM_Evacuator::condition_count; condition += 1) {
+			if (0 < counts[condition]) {
+				omrtty_printf(" %s:%llu", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition), counts[condition]);
+			}
+		}
+		omrtty_printf(" objects:%llu\n", _aggregateMetrics._volumeMetrics[MM_Evacuator::objects]);
+		for (uintptr_t metric = 0; metric < MM_Evacuator::condition_states; metric += 1) {
+			if (0 < _aggregateMetrics._conditionMetrics[metric]) {
+				omrtty_printf("%8lu:%10llu;", _extensions->scavengerStats._gcCount, _aggregateMetrics._conditionMetrics[metric]);
+				uintptr_t conditions = metric;
+				for (uintptr_t condition = 0; (0 < conditions) && (condition < MM_Evacuator::condition_count); condition += 1) {
+					if (1 == (1 & conditions)) {
+						omrtty_printf(" %s", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition));
+					}
+					conditions >>= 1;
 				}
 				omrtty_printf("\n");
 			}

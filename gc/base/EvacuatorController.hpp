@@ -611,8 +611,7 @@ public:
 	volatile uintptr_t *sampleStalledMap() { return _stalledEvacuatorBitmap; }
 	volatile uintptr_t *sampleResumingMap() { return _resumingEvacuatorBitmap; }
 	uintptr_t sampleEvacuatorFlags() { return _evacuatorFlags; }
-	void printConditions(MM_EnvironmentBase *env);
-	void printThreads(MM_EnvironmentBase *env);
+	void printMetrics(MM_EnvironmentBase *env);
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 };
 

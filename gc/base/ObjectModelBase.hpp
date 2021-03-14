@@ -57,8 +57,7 @@ struct OMR_VMThread;
 #define OMR_GC_MIXED_OBJECT		0
 #define OMR_GC_POINTER_ARRAY	1
 #define OMR_GC_PRIMITIVE_OBJECT	2
-#define OMR_GC_PRIMITIVE_ARRAY	3
-#define OMR_GC_PRIMITIVE_MASK	2
+#define OMR_GC_PRIMITIVE_ARRAY	4
 
 /**
  * Provides information for a given object.
