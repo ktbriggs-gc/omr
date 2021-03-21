@@ -2448,12 +2448,13 @@ void
 MM_Scavenger::workThreadGarbageCollect(MM_EnvironmentStandard *env)
 {
 	Assert_MM_false(IS_CONCURRENT_ENABLED);
-	OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
-	uint64_t runStartTime = omrtime_hires_clock();
-	uint64_t cpuStartTime = omrthread_get_self_cpu_time(omrthread_self());
 
 	/* GC init (set up per-invocation values) */
 	workerSetupForGC(env);
+
+	OMRPORT_ACCESS_FROM_ENVIRONMENT(env);
+	uint64_t runStartTime = omrtime_hires_clock();
+	uint64_t cpuStartTime = omrthread_get_self_cpu_time(omrthread_self());
 
 	/*
 	 * There is a hidden assumption that RS Overflow flag would not be changed between beginning of scavenge and this point,

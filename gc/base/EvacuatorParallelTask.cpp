@@ -37,17 +37,29 @@ MM_EvacuatorParallelTask::run(MM_EnvironmentBase *envBase)
 {
 	MM_EnvironmentStandard *env = MM_EnvironmentStandard::getEnvironment(envBase);
 
-	/* bind the worker thread (env) to an evacuator instance and send the bound evacuator off to work ... */
-	_controller->bindWorker(env)->workThreadGarbageCollect(env);
+	/* send bound evacuator off to work ... */
+	env->getEvacuator()->workThreadGarbageCollect(env);
+}
 
-	/* release evacuator binding and passivate evacuator instance */
-	_controller->unbindWorker(env);
+void
+MM_EvacuatorParallelTask::masterSetup(MM_EnvironmentBase *envBase)
+{
+	MM_EnvironmentStandard *env = MM_EnvironmentStandard::getEnvironment(envBase);
+	if (env->isMasterThread()) {
+		/* instantiate or resurrect evacuator instances per dispatched thread count */
+		_controller-> bindWorkers(env);
+	} else {
+		Assert_MM_true(NULL == env->_cycleState);
+		env->_cycleState = _cycleState;
+	}
 }
 
 void
 MM_EvacuatorParallelTask::setup(MM_EnvironmentBase *envBase)
 {
 	MM_EnvironmentStandard *env = MM_EnvironmentStandard::getEnvironment(envBase);
+	/* bind dispatched thread to an evacuator instance */
+	_controller-> bindWorker(env);
 	if (env->isMasterThread()) {
 		Assert_MM_true(_cycleState == env->_cycleState);
 	} else {
@@ -60,6 +72,8 @@ void
 MM_EvacuatorParallelTask::cleanup(MM_EnvironmentBase *envBase)
 {
 	MM_EnvironmentStandard *env = MM_EnvironmentStandard::getEnvironment(envBase);
+	/* release evacuator binding and passivate evacuator instance */
+	_controller->unbindWorker(env);
 	if (env->isMasterThread()) {
 		Assert_MM_true(_cycleState == env->_cycleState);
 	} else {

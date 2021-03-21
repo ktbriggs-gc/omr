@@ -237,7 +237,6 @@ MM_EvacuatorController::setHeapLayout()
 void
 MM_EvacuatorController::masterSetupForGC(MM_EnvironmentStandard *env)
 {
-	_evacuatorIndex = 0;
 	_evacuatorFlags = 0;
 	_isNotifyOfWorkPending = 0;
 
@@ -247,18 +246,17 @@ MM_EvacuatorController::masterSetupForGC(MM_EnvironmentStandard *env)
 	/* reset the evacuator bit maps */
 	uintptr_t tailMask = 0;
 	uintptr_t bitmapWords = countEvacuatorBitmapWords(&tailMask, _maxGCThreads);
-	VM_AtomicSupport::readBarrier();
 	for (uintptr_t map = 0; map < bitmapWords; map += 1) {
 		Debug_MM_true(0 == _boundEvacuatorBitmap[map]);
 		Debug_MM_true(0 == _stalledEvacuatorBitmap[map]);
 		Debug_MM_true(0 == _resumingEvacuatorBitmap[map]);
-		VM_AtomicSupport::set(&_boundEvacuatorBitmap[map], 0);
-		VM_AtomicSupport::set(&_stalledEvacuatorBitmap[map], 0);
-		VM_AtomicSupport::set(&_resumingEvacuatorBitmap[map], 0);
-		VM_AtomicSupport::set(&_evacuatorMask[map], 0);
+		_boundEvacuatorBitmap[map]= 0;
+		_stalledEvacuatorBitmap[map]= 0;
+		_resumingEvacuatorBitmap[map]= 0;
+		_evacuatorMask[map]= 0;
 	}
-	VM_AtomicSupport::set(&_stalledEvacuatorCount, 0);
-	VM_AtomicSupport::set(&_evacuatorCount, 0);
+	_stalledEvacuatorCount= 0;
+	_evacuatorCount= 0;
 
 	/* set up controller's subspace and layout arrays to match collector subspaces */
 	_memorySubspace[MM_Evacuator::evacuate] = _evacuateMemorySubSpace;
@@ -270,65 +268,62 @@ MM_EvacuatorController::masterSetupForGC(MM_EnvironmentStandard *env)
 	/* reset upper bounds for tlh allocation size, indexed by outside region -- these will be readjusted when thread count is stable */
 	_copyspaceAllocationCeiling[MM_Evacuator::survivor] = _copyspaceAllocationCeiling[MM_Evacuator::tenure] = _maximumCopyspaceSize;
 	_objectAllocationCeiling[MM_Evacuator::survivor] = _objectAllocationCeiling[MM_Evacuator::tenure] = ~(uintptr_t)0xff;
-	_allocatedVolume[MM_Evacuator::survivor] = _allocatedVolume[MM_Evacuator::tenure] = 0;
 
 	/* clear private/public controller flags then set up the evacuator delegate class, which can initialize its public flags for the cycle */
 	_evacuatorFlags = MM_EvacuatorDelegate::prepareForEvacuation(env);
 }
 
-MM_Evacuator *
-MM_EvacuatorController::bindWorker(MM_EnvironmentStandard *env)
+void
+MM_EvacuatorController::bindWorkers(MM_EnvironmentStandard *env)
 {
-	/* get an unbound evacuator instance */
-	VM_AtomicSupport::readBarrier();
-	uintptr_t workerIndex = VM_AtomicSupport::add(&_evacuatorIndex, 1) - 1;
+	/* number of dispatched threads must be stable at this point */
+	_evacuatorCount = _dispatcher->activeThreadCount();
 
-	/* instantiate evacuator task for this worker thread if required (evacuators are instantiated once and persist until vm shuts down) */
-	if (NULL == _evacuatorTask[workerIndex]) {
-		_evacuatorTask[workerIndex] = MM_Evacuator::newInstance(workerIndex, this, _extensions);
-		Assert_MM_true(NULL != _evacuatorTask[workerIndex]);
-	}
-
-	/* heap layout and number of dispatched threads must be stable at this point and each thread will initialize the following dependent items identically */
-	_evacuatorCount = env->_currentTask->getThreadCount();
-
-	/* set upper bound for tlh allocation size is indexed by outside region -- reduce these for small region spaces */
+	/* upper bound for tlh allocation size is indexed by outside region -- reduce these for small region spaces */
 	uintptr_t optimalAllocationSize = (_heapLayout[MM_Evacuator::survivor][1] - _heapLayout[MM_Evacuator::survivor][0]) / (MM_Evacuator::copyspaces * _evacuatorCount);
 	optimalAllocationSize = OMR_MAX(OMR_MIN(_maximumCopyspaceSize, _extensions->objectModel.adjustSizeInBytes(optimalAllocationSize)), _minimumCopyspaceSize);
-	VM_AtomicSupport::readBarrier();
-	VM_AtomicSupport::lockCompareExchange(&_copyspaceAllocationCeiling[MM_Evacuator::survivor], _maximumCopyspaceSize, optimalAllocationSize);
-	VM_AtomicSupport::lockCompareExchange(&_copyspaceAllocationCeiling[MM_Evacuator::tenure], _maximumCopyspaceSize, optimalAllocationSize);
+	_copyspaceAllocationCeiling[MM_Evacuator::survivor] = _copyspaceAllocationCeiling[MM_Evacuator::tenure] = optimalAllocationSize;
 
-	/* bind the evacuator to the gc cycle */
+	/* instantiate evacuator instances */
+	for (uintptr_t evacuatorIndex = 0; evacuatorIndex < _evacuatorCount; evacuatorIndex += 1) {
+		if (NULL == _evacuatorTask[evacuatorIndex]) {
+			_evacuatorTask[evacuatorIndex] = MM_Evacuator::newInstance(evacuatorIndex, this, _extensions);
+			Assert_MM_true(NULL != _evacuatorTask[evacuatorIndex]);
+		}
+		memset((void*)_evacuatorMetrics[evacuatorIndex], 0, sizeof(MM_Evacuator::Metrics));
+	}
+
+	/* evacuators bind to the gc cycle as they come online */
 	fillEvacuatorBitmap(_evacuatorMask);
-	_evacuatorTask[workerIndex]->bindWorkerThread(env, _tenureMask);
-	_evacuatorTask[workerIndex]->setHeapBounds(_heapLayout);
-	setEvacuatorBit(workerIndex, _boundEvacuatorBitmap);
+}
 
-	Debug_MM_true(_evacuatorCount > workerIndex);
-	Debug_MM_true(_evacuatorCount == env->_currentTask->getThreadCount());
-	Debug_MM_true(testEvacuatorBit(workerIndex, _evacuatorMask));
-	Debug_MM_true(isEvacuatorBitmapFull(_evacuatorMask));
-
-	/* all of the common artifacts initialized above are in stable or managed volatile RAM as long as the evacuator is bound */
-	return _evacuatorTask[workerIndex];
+void
+MM_EvacuatorController::bindWorker(MM_EnvironmentStandard *env)
+{
+	Debug_MM_true(_evacuatorTask[env->getSlaveID()]->getWorkerIndex() == env->getSlaveID());
+	/* activate the evacuator instance and bind it to the gc cycle */
+	MM_Evacuator *evacuator = _evacuatorTask[env->getSlaveID()];
+	evacuator->bindWorkerThread(env, _tenureMask);
+	evacuator->setHeapBounds(_heapLayout);
+	uintptr_t mapBit = 0, mapWord = mapEvacuatorIndexToMapAndMask(evacuator->getWorkerIndex(), &mapBit);
+	VM_AtomicSupport::readBarrier();
+	VM_AtomicSupport::bitOr(&_boundEvacuatorBitmap[mapWord], mapBit);
+	Debug_MM_true(env->_currentTask->getThreadCount() == _evacuatorCount);
 }
 
 void
 MM_EvacuatorController::unbindWorker(MM_EnvironmentStandard *env)
 {
+	/* unbind and passivate the evacuator instance */
 	MM_Evacuator *evacuator = env->getEvacuator();
-
-	/* passivate the evacuator instance */
-	clearEvacuatorBit(evacuator->getWorkerIndex(), _boundEvacuatorBitmap);
-
-#if defined(EVACUATOR_DEBUG)
-	if (isEvacuatorBitmapEmpty(_boundEvacuatorBitmap)) {
-		Debug_MM_true(isEvacuatorBitmapEmpty(_stalledEvacuatorBitmap) || isAborting());
-	}
-#endif /* defined(EVACUATOR_DEBUG) */
-
 	evacuator->unbindWorkerThread(env);
+	uintptr_t mapBit = 0, mapWord = mapEvacuatorIndexToMapAndMask(evacuator->getWorkerIndex(), &mapBit);
+	VM_AtomicSupport::readBarrier();
+	VM_AtomicSupport::bitAnd(&_boundEvacuatorBitmap[mapWord], ~mapBit);
+
+	Debug_MM_true(!isEvacuatorBitmapEmpty(_boundEvacuatorBitmap)
+		|| (isEvacuatorBitmapEmpty(_stalledEvacuatorBitmap) && isEvacuatorBitmapEmpty(_resumingEvacuatorBitmap))
+	);
 }
 
 uintptr_t
@@ -356,14 +351,12 @@ void
 MM_EvacuatorController::notifyOfWork(MM_Evacuator *evacuator)
 {
 	/* only one notification is required if >1 fat evacutors have distributable work and >0 evacuators are starving for work */
-	VM_AtomicSupport::readBarrier();
 	if (isNotifyOfWorkPending() && (0 < evacuator->getDistributableVolumeOfWork())) {
 		uint64_t time = knock(evacuator->getEnvironment(), _workMutex);
 		if (0 < time) {
 			if (isNotifyOfWorkPending() && (0 < evacuator->getDistributableVolumeOfWork())) {
+				_isNotifyOfWorkPending = 0;
 				omrthread_monitor_notify(_workMutex);
-				VM_AtomicSupport::readBarrier();
-				VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 0);
 			}
 			leave(evacuator->getEnvironment(), _workMutex, time, MM_Evacuator::notify_count);
 		}
@@ -382,13 +375,11 @@ MM_EvacuatorController::waitForWork(MM_Evacuator *worker)
 		/* worker has work and can resume if it was stalled stall */
 		if (testEvacuatorBit(workerIndex, _stalledEvacuatorBitmap)) {
 			clearEvacuatorBit(workerIndex, _stalledEvacuatorBitmap);
-			VM_AtomicSupport::readBarrier();
-			VM_AtomicSupport::subtract(&_stalledEvacuatorCount, 1);
+			_stalledEvacuatorCount -= 1;
 		}
 
 		/* prospectively notify other stalled evacuators that there may be more work to be found */
-		VM_AtomicSupport::readBarrier();
-		VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 1, 0);
+		_isNotifyOfWorkPending = 0;
 		if (0 < _stalledEvacuatorCount) {
 			worker->_metrics->_threadMetrics[MM_Evacuator::notify_count] += 1;
 			omrthread_monitor_notify(_workMutex);
@@ -404,9 +395,7 @@ MM_EvacuatorController::waitForWork(MM_Evacuator *worker)
 	/* the evacuator that sets the last stall bit to fill the stalled bitmap will notify all to complete the heap scan */
 	uintptr_t otherStalledEvacuators = setEvacuatorBit(workerIndex, _stalledEvacuatorBitmap);
 	if (0 == (otherStalledEvacuators & getEvacuatorBitMask(workerIndex))) {
-		VM_AtomicSupport::readBarrier();
-		VM_AtomicSupport::add(&_stalledEvacuatorCount, 1);
-		VM_AtomicSupport::readWriteBarrier();
+		_stalledEvacuatorCount += 1;
 
 		/* if all evacuators are stalled and none are resuming (ie, with work) the scan cycle can complete or abort */
 		Debug_MM_true((_stalledEvacuatorCount == _evacuatorCount) == (isEvacuatorBitmapFull(_stalledEvacuatorBitmap) && isEvacuatorBitmapEmpty(_resumingEvacuatorBitmap)));
@@ -425,9 +414,7 @@ MM_EvacuatorController::waitForWork(MM_Evacuator *worker)
 		Debug_MM_true(0 < _stalledEvacuatorCount);
 		Debug_MM_true(!worker->hasScanWork());
 
-		/* request and wait for another evacuator to notify of work or end of heap scan*/
-		VM_AtomicSupport::readBarrier();
-		VM_AtomicSupport::lockCompareExchange(&_isNotifyOfWorkPending, 0, 1);
+		_isNotifyOfWorkPending = 1;
 		pause(worker->getEnvironment(), _workMutex, MM_Evacuator::wait_count);
 	}
 
@@ -440,8 +427,7 @@ MM_EvacuatorController::waitForWork(MM_Evacuator *worker)
 		/* remove resuming worker from stall but leave as resuming until all evacuators synchronize and clear resuming state */
 		clearEvacuatorBit(workerIndex, _stalledEvacuatorBitmap);
 		clearEvacuatorBit(workerIndex, _resumingEvacuatorBitmap);
-		VM_AtomicSupport::readBarrier();
-		VM_AtomicSupport::subtract(&_stalledEvacuatorCount, 1);
+		_stalledEvacuatorCount -= 1;
 
 		/* return to exit wait loop and complete heap scan */
 		return false;
@@ -472,15 +458,16 @@ MM_EvacuatorController::aggregateEvacuatorMetrics(MM_EnvironmentStandard *env)
 	}
 
 	/* aggregate volume allocated in survivor space equals aggregate bytes copied or recycled or discarded from survivor space */
+	uintptr_t liveVolume = _aggregateMetrics._volumeMetrics[MM_Evacuator::survivor_copy];
 	uintptr_t disposedVolume = _aggregateMetrics._volumeMetrics[MM_Evacuator::survivor_recycled] + _aggregateMetrics._volumeMetrics[MM_Evacuator::survivor_discarded];
-	Assert_GC_true_with_message3(env, _allocatedVolume[MM_Evacuator::survivor] == (_aggregateMetrics._volumeMetrics[MM_Evacuator::survivor_copy] + disposedVolume),
-			"***[evacuator-controller] allocated survivor bytes (%lld) != (%lld+%lld) (copied+discarded) bytes\n",
-			_allocatedVolume[MM_Evacuator::survivor], _aggregateMetrics._volumeMetrics[MM_Evacuator::survivor_copy], disposedVolume);
+	uintptr_t allocatedVolume = _aggregateMetrics._volumeMetrics[MM_Evacuator::survivor_alloc];
+	Assert_GC_true_with_message4(env, (allocatedVolume == (liveVolume + disposedVolume)),
+			"***[evacuator-controller] allocated survivor bytes %lld != %lld (%lld+%lld) (copied+discarded) bytes\n",
+			allocatedVolume, (liveVolume + disposedVolume), liveVolume, disposedVolume);
 }
 
 void
 MM_EvacuatorController::assertGenerationalInvariant(MM_EnvironmentStandard *env) {
-	VM_AtomicSupport::readWriteBarrier();
 	if (!isAborting()) {
 		/* aggregate evacuator volume metrics */
 		uintptr_t volume[] = {0, 0, 0, 0};
@@ -506,8 +493,12 @@ MM_EvacuatorController::calculateOptimalWhitespaceSize(MM_Evacuator::Region regi
 {
 	/* scale down tlh allocation size for survivor as available whitespace reserve depletes beyond critical threshold */
 	if ((MM_Evacuator::survivor == region) && (0 < _copyspaceAllocationCeiling[region])) {
+		uintptr_t allocatedVolume = 0;
+		for (uintptr_t taskIndex = 0; taskIndex < _dispatcher->threadCount(); taskIndex += 1) {
+			allocatedVolume += _evacuatorMetrics[taskIndex]->_volumeMetrics[MM_Evacuator::survivor_alloc];
+		}
 		uintptr_t optimalAllocationSize = _minimumCopyspaceSize;
-		intptr_t availableWhitespace = (_heapLayout[region][1] - _heapLayout[region][0]) - _allocatedVolume[region];
+		intptr_t availableWhitespace = (_heapLayout[region][1] - _heapLayout[region][0]) - allocatedVolume;
 		if ((intptr_t)optimalAllocationSize <= availableWhitespace) {
 			optimalAllocationSize = alignToObjectSize((uintptr_t)(availableWhitespace / (MM_Evacuator::copyspaces * _evacuatorCount)));
 			optimalAllocationSize = OMR_MAX(OMR_MIN(_maximumCopyspaceSize, optimalAllocationSize), _minimumCopyspaceSize);
@@ -515,9 +506,11 @@ MM_EvacuatorController::calculateOptimalWhitespaceSize(MM_Evacuator::Region regi
 			optimalAllocationSize = 0;
 		}
 		/* lower the object allocation ceiling for the region if forced to accept suboptimal size*/
-		VM_AtomicSupport::readBarrier();
-		while (optimalAllocationSize < _copyspaceAllocationCeiling[region]) {
-			VM_AtomicSupport::lockCompareExchange(&_copyspaceAllocationCeiling[region], _copyspaceAllocationCeiling[region], optimalAllocationSize);
+		if (optimalAllocationSize < _copyspaceAllocationCeiling[region]) {
+			VM_AtomicSupport::readBarrier();
+			while (optimalAllocationSize < _copyspaceAllocationCeiling[region]) {
+				VM_AtomicSupport::lockCompareExchange(&_copyspaceAllocationCeiling[region], _copyspaceAllocationCeiling[region], optimalAllocationSize);
+			}
 		}
 	}
 	/* be as greedy as possible all the time in tenure */
@@ -552,12 +545,12 @@ MM_EvacuatorController::getWhitespace(MM_Evacuator *evacuator, MM_Evacuator::Reg
 
 				/* got a tlh of some size <= optimalSize */
 				uintptr_t whitesize = (uintptr_t)addrTop - (uintptr_t)addrBase;
-				VM_AtomicSupport::readBarrier();
-				VM_AtomicSupport::add(&_allocatedVolume[region], whitesize);
 				env->_scavengerStats.countCopyCacheSize(whitesize, _maximumCopyspaceSize);
 				if (MM_Evacuator::survivor == region) {
+					evacuator->getMetrics()->_volumeMetrics[MM_Evacuator::survivor_alloc] += whitesize;
 					env->_scavengerStats._semiSpaceAllocationCountSmall += 1;
 				} else {
+					evacuator->getMetrics()->_volumeMetrics[MM_Evacuator::tenure_alloc] += whitesize;
 					env->_scavengerStats._tenureSpaceAllocationCountSmall += 1;
 				}
 				if (_extensions->_tenureSize != (uintptr_t)(evacuator->_heapBounds[MM_Evacuator::tenure][1] - evacuator->_heapBounds[MM_Evacuator::tenure][0])) {
@@ -589,9 +582,11 @@ MM_EvacuatorController::getWhitespace(MM_Evacuator *evacuator, MM_Evacuator::Reg
 		}
 
 		/* lower the object allocation ceiling for the region if forced to accept suboptimal size*/
-		VM_AtomicSupport::readBarrier();
-		while (actualSize < _copyspaceAllocationCeiling[region]) {
-			VM_AtomicSupport::lockCompareExchange(&_copyspaceAllocationCeiling[region], _copyspaceAllocationCeiling[region], actualSize);
+		if (actualSize < _copyspaceAllocationCeiling[region]) {
+			VM_AtomicSupport::readBarrier();
+			while (actualSize < _copyspaceAllocationCeiling[region]) {
+				VM_AtomicSupport::lockCompareExchange(&_copyspaceAllocationCeiling[region], _copyspaceAllocationCeiling[region], actualSize);
+			}
 		}
 
 		Debug_MM_true4(evacuator->getEnvironment(), (NULL == whitespace) || (_extensions->tlhMinimumSize <= whitespace->length()),
@@ -640,12 +635,12 @@ MM_EvacuatorController::getObjectWhitespace(MM_Evacuator *evacuator, MM_Evacuato
 #endif /* defined(EVACUATOR_DEBUG) */
 
 			/* allocated object whitespace */
-			VM_AtomicSupport::readBarrier();
-			VM_AtomicSupport::add(&_allocatedVolume[region], length);
 			env->_scavengerStats.countCopyCacheSize(length, _maximumCopyspaceSize);
 			if (MM_Evacuator::survivor == region) {
+				evacuator->getMetrics()->_volumeMetrics[MM_Evacuator::survivor_alloc] += length;
 				env->_scavengerStats._semiSpaceAllocationCountLarge += 1;
 			} else {
+				evacuator->getMetrics()->_volumeMetrics[MM_Evacuator::tenure_alloc] += length;
 				env->_scavengerStats._tenureSpaceAllocationCountLarge += 1;
 			}
 			if (_extensions->_tenureSize != (uintptr_t)(evacuator->_heapBounds[MM_Evacuator::tenure][1] - evacuator->_heapBounds[MM_Evacuator::tenure][0])) {
@@ -670,11 +665,7 @@ MM_EvacuatorController::getObjectWhitespace(MM_Evacuator *evacuator, MM_Evacuato
 				}
 			}
 #endif /* defined(EVACUATOR_DEBUG)  */
-		} else {
-			/* lower the object allocation ceiling for the region */
-			if (length <= OMR_MINIMUM_OBJECT_SIZE) {
-				length = 0;
-			}
+		} else if (length < _objectAllocationCeiling[region]) {
 			VM_AtomicSupport::readBarrier();
 			while (length < _objectAllocationCeiling[region]) {
 				VM_AtomicSupport::lockCompareExchange(&_objectAllocationCeiling[region], _objectAllocationCeiling[region], length);
@@ -700,7 +691,6 @@ MM_EvacuatorController::isAllocatable(MM_Evacuator::Region region, uintptr_t siz
 {
 	return (sizeInBytes < OMR_MAX(_copyspaceAllocationCeiling[region], _objectAllocationCeiling[region]));
 }
-
 
 /* calculate the number of active words in the evacuator bitmaps */
 uintptr_t
@@ -767,24 +757,22 @@ MM_EvacuatorController::fillEvacuatorBitmap(volatile uintptr_t * const bitmap) {
 	fillEvacuatorBitmap(bitmap, _evacuatorCount);
 }
 
-/* set evacuator bit in evacuator bitmap */
+/* set evacuator bit in evacuator bitmap (reliable only when caller holds controller mutex) */
 uintptr_t
 MM_EvacuatorController::setEvacuatorBit(uintptr_t evacuatorIndex, volatile uintptr_t * const bitmap)
 {
-	uintptr_t evacuatorMask = 0;
-	uintptr_t evacuatorMap = mapEvacuatorIndexToMapAndMask(evacuatorIndex, &evacuatorMask);
-	VM_AtomicSupport::readBarrier();
-	return VM_AtomicSupport::bitOr(&bitmap[evacuatorMap], evacuatorMask);
+	uintptr_t evacuatorMask = 0, evacuatorMap = mapEvacuatorIndexToMapAndMask(evacuatorIndex, &evacuatorMask);
+	uintptr_t evacuatorBits = bitmap[evacuatorMap];
+	bitmap[evacuatorMap] |= evacuatorMask;
+	return evacuatorBits;
 }
 
-/* clear evacuator bit in evacuator bitmap */
+/* clear evacuator bit in evacuator bitmap (reliable only when caller holds controller mutex) */
 void
 MM_EvacuatorController::clearEvacuatorBit(uintptr_t evacuatorIndex, volatile uintptr_t * const bitmap)
 {
-	uintptr_t evacuatorMask = 0;
-	uintptr_t evacuatorMap = mapEvacuatorIndexToMapAndMask(evacuatorIndex, &evacuatorMask);
-	VM_AtomicSupport::readBarrier();
-	VM_AtomicSupport::bitAnd(&bitmap[evacuatorMap], ~evacuatorMask);
+	uintptr_t evacuatorMask = 0, evacuatorMap = mapEvacuatorIndexToMapAndMask(evacuatorIndex, &evacuatorMask);
+	bitmap[evacuatorMap] &= ~evacuatorMask;
 }
 
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)

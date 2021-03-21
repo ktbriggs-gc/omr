@@ -74,11 +74,9 @@ private:
 	volatile uintptr_t * const _evacuatorMask;			/* maps all evacuator threads, bound or unbound */
 	volatile uintptr_t _isNotifyOfWorkPending;			/* non-zero if an evacuator is stalled and notification of work is pending */
 	volatile uintptr_t _stalledEvacuatorCount;			/* number of stalled evacuator threads */
-	volatile uintptr_t _evacuatorIndex;					/* number of GC threads that have joined the evacuation so far */
 	volatile uintptr_t _evacuatorFlags;					/* private and public (language defined) evacuation flags shared among evauators */
 	volatile uintptr_t _copyspaceAllocationCeiling[2];	/* upper bounds for copyspace allocation in survivor, tenure regions */
 	volatile uintptr_t _objectAllocationCeiling[2];		/* upper bounds for object allocation in survivor, tenure regions */
-	volatile uintptr_t _allocatedVolume[2];				/* bytes allocated for objects and copyspaces from survivor, tenure regions */
 
 	MM_MemorySubSpace *_memorySubspace[3];				/* pointer to memory subspace per heap region */
 
@@ -363,7 +361,7 @@ public:
 		do {
 
 			nextIndex += 1;
-			if (nextIndex >= _evacuatorIndex) {
+			if (nextIndex >= _evacuatorCount) {
 				nextIndex = 0;
 			}
 
@@ -373,12 +371,18 @@ public:
 	}
 
 	/**
-	 * Parallel task wrapper calls this to bind worker thread to an evacuator instance at the beginning of a gc cycle.
+	 * Parallel task wrapper calls this for *master* thread to instantiate or resurrect evacuator instances at the beginning of a gc cycle.
 	 *
-	 * @param env the environment for the worker thread
-	 * @return a pointer to the evacuator that is bound to the worker thread
+	 * @param env the environment for the calling thread
 	 */
-	MM_Evacuator *bindWorker(MM_EnvironmentStandard *env);
+	void bindWorkers(MM_EnvironmentStandard *env);
+
+	/**
+	 * Parallel task wrapper calls this to bind *worker* threads to evacuator instances at the beginning of a gc cycle.
+	 *
+	 * @param env the environment for the calling thread
+	 */
+	void bindWorker(MM_EnvironmentStandard *env);
 
 	/**
 	 * Parallel task wrapper calls this to unbind worker thread to an evacuator instance at the end of a gc cycle.
@@ -579,7 +583,6 @@ public:
 		, _evacuatorMask(allocateEvacuatorBitmap(env, _maxGCThreads))
 		, _isNotifyOfWorkPending(0)
 		, _stalledEvacuatorCount(0)
-		, _evacuatorIndex(0)
 		, _evacuatorFlags(0)
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 		, _collectorStartTime(0)

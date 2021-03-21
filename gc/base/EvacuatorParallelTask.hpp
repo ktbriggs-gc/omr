@@ -56,6 +56,7 @@ public:
 	virtual UDATA getVMStateID() { return OMRVMSTATE_GC_EVACUATOR; };
 	
 	virtual void run(MM_EnvironmentBase *env);
+	virtual void masterSetup(MM_EnvironmentBase *env);
 	virtual void setup(MM_EnvironmentBase *env);
 	virtual void cleanup(MM_EnvironmentBase *env);
 	virtual void complete(MM_EnvironmentBase *envBase);

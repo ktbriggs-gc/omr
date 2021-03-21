@@ -164,9 +164,9 @@ private:
 	MMINLINE bool pop();
 	MMINLINE GC_ObjectScanner *scanner(const ScanSpace *stackframe) const;
 	MMINLINE Region source(const ScanSpace *stackframe) const;
-	MMINLINE bool pulled(const ScanSpace *stackframe) const;
 	MMINLINE bool nil(const ScanSpace *stackframe) const;
 	MMINLINE void reset(ScanSpace *stackframe) const;
+	MMINLINE bool flagged(const ScanSpace *stackframe, uintptr_t flags) const;
 
 	/* copy workflow: copy evacuation referents scanned from _sp->_object into survivor/tenure copyspaces, filling copyspaces with scan work */
 	omrobjectptr_t copy(MM_ForwardedHeader *forwardedHeader);
@@ -175,6 +175,7 @@ private:
 	MMINLINE omrobjectptr_t copyForward(MM_ForwardedHeader *forwardedHeader, CopySpace *copyspace, const uintptr_t sizeBeforeCopy, const uintptr_t sizeAfterCopy);
 	MMINLINE bool remember(omrobjectptr_t object, uintptr_t rememberedState);
 	MMINLINE uint8_t *rebase(CopySpace *copyspace, uintptr_t *volume);
+	MMINLINE bool worksize(const CopySpace *copyspace, uintptr_t size) const;
 	MMINLINE bool whitesize(const CopySpace *copyspace, uintptr_t size) const;
 	MMINLINE uintptr_t whiteFlags(bool isLoa) const;
 	bool refresh(CopySpace *copyspace, Region region, uintptr_t size, bool isLeaf);
@@ -184,6 +185,7 @@ private:
 	MMINLINE CopySpaces index(const CopySpace *copyspace) const;
 	MMINLINE CopySpace *inside(Region region);
 	MMINLINE CopySpace *outside(Region region);
+	MMINLINE bool flagged(const CopySpace *stackframe, uintptr_t flags) const;
 
 	/* workspace workflow: rebase copyspaces to extract scan work to worklist to be pulled into stack for scanning */
 	MMINLINE bool getWork();
@@ -201,6 +203,7 @@ private:
 	MMINLINE bool isConditionSet(uintptr_t conditions) const;
 	MMINLINE ConditionFlag copyspaceTailFillCondition(Region region) const;
 	MMINLINE bool isForceOutsideCopyCondition(Region region) const;
+	MMINLINE bool isForceOverflowCopyCondition(MM_Evacuator::Region region, bool isPrimitive, uintptr_t sizeAfterCopy) const;
 	MMINLINE bool isBreadthFirstCondition() const;
 
 	/* object geometry */

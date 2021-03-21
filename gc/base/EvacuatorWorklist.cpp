@@ -103,8 +103,7 @@ MM_EvacuatorWorklist::add(MM_EvacuatorBase::Workspace *workspace, bool defer)
 			_freeList->add(workspace);
 		}
 	}
-	VM_AtomicSupport::readBarrier();
-	VM_AtomicSupport::add(&_volume, work);
+	_volume += work;
 
 	assertWorklistInvariant();
 }
@@ -131,8 +130,7 @@ MM_EvacuatorWorklist::add(List *workspaces, bool defer)
 		for (const MM_EvacuatorBase::Workspace *w = workspaces->head; w != NULL; w = w->next) {
 			v += volume(w);
 		}
-		VM_AtomicSupport::readBarrier();
-		VM_AtomicSupport::add(&_volume, v);
+		_volume += v;
 		/* cut appended workspaces from input list */
 		workspaces->head = workspaces->tail = NULL;
 	}
@@ -158,8 +156,7 @@ MM_EvacuatorWorklist::next(bool deferred)
 		Debug_MM_true((work != list->tail) || (NULL == work->next));
 		Debug_MM_true((work == list->tail) || (NULL != work->next));
 
-		VM_AtomicSupport::readBarrier();
-		VM_AtomicSupport::subtract(&_volume, volume(work));
+		_volume -= volume(work);
 		list->head = work->next;
 		if (NULL == list->head) {
 			list->tail = NULL;
@@ -178,8 +175,7 @@ MM_EvacuatorWorklist::flush()
 {
 	assertWorklistInvariant();
 
-	VM_AtomicSupport::readBarrier();
-	VM_AtomicSupport::set(&_volume, 0);
+	_volume = 0;
 
 	while (NULL != _default.head) {
 		_default.head = _freeList->flush(_default.head);

@@ -32,6 +32,8 @@
 #undef EVACUATOR_DEBUG_TRACE	/* enables scavenger remembered set tracing (if EVACUATOR_DEBUG or EVACUATOR_DEBUG_ALWAYS are defined) */
 #undef EVACUATOR_DEBUG_ALWAYS	/* enables metrics gathering and reporting */
 
+#define EVACUATOR_DEBUG_ALWAYS
+
 #if defined(EVACUATOR_DEBUG) && defined(EVACUATOR_DEBUG_ALWAYS)
 #error "EVACUATOR_DEBUG and EVACUATOR_DEBUG_ALWAYS are mutually exclusive"
 #endif /* defined(EVACUATOR_DEBUG) && defined(EVACUATOR_DEBUG_ALWAYS) */
@@ -247,9 +249,11 @@ public:
 		, scanned			/* bytes scanned in survivor or tenure */
 		, leaf				/* bytes not scanned in primitive objects */
 		, objects			/* number of objects copied/scanned */
+		, survivor_alloc	/* number of bytes of allocated survivor whitespace */
 		, survivor_recycled	/* number of bytes of recycled survivor whitespace */
-		, tenure_recycled	/* number of bytes of recycled tenure whitespace */
 		, survivor_discarded/* number of bytes discarded as unusable survivor whitespace */
+		, tenure_alloc		/* number of bytes of allocated tenure whitespace */
+		, tenure_recycled	/* number of bytes of recycled tenure whitespace */
 		, tenure_discarded	/* number of bytes discarded as unusable tenure whitespace */
 		, volume_metrics	/* upper bound for volume metrics enum */
 		, array_counters = OMR_SCAVENGER_OBJECT_BINS
@@ -289,7 +293,7 @@ public:
 		, scan_roots = 64				/* this is raised while scanning the root set */
 		, scan_worklist = 128			/* this is raised while scanning the worklist */
 		, scan_clearable = 256			/* this is raised while delegating to clearing stages */
-		, indexable_object = 512		/* forcing outside copy for a pointer array object */
+		, indexable_object = 512		/* this is raised while copying a pointer array object */
 		, breadth_first_always = 1024	/* forcing outside copy for all objects all the time */
 		, conditions_mask = 2047		/* bit mask covering above flags */
 		, condition_states = 2048		/* number of possible condition combinations */
