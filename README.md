@@ -21,15 +21,14 @@ SPDX-License-Identifier: EPL-2.0 OR Apache-2.0 OR GPL-2.0 WITH Classpath-excepti
 -->
 
 # WIP: Evacuator proof of concept
-
 Evacuator is a WIP generational garbage collector prototype that uses a
 bounded scan stack to navigate the evacuation live set and direct
-evacuation copy to collocate referring pointer and head of evacuated
+evacuation copy, collocating referring pointer and head of evacuated
 referent within the same L1 cache line whenever possible. 
 
 An [overview](https://github.com/ktbriggs-gc/omr/files/6177583/EvacuatorOverview.pdf)
-of evacuator operation is available. Preliminary testing with SPECjbb2008 demonstrate
-20-30% cache line collocation of reference endpoints and a >1% improvement in benchmark
+of evacuator operation is available. Preliminary testing with SPECjbb2008 demonstrates
+20-30% cache line collocation of reference endpoints and >1% improvement in benchmark
 scores when collected with evacuator versus scavenger (the default STW generational
 collector for OpenJ9).
 
