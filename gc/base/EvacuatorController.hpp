@@ -490,7 +490,7 @@ public:
 	bool isAllocatable(MM_Evacuator::Region region, uintptr_t sizeInBytes);
 
 	/**
-	 * Evacuator calls this to get free space for refreshing stack scanspaces and outside copyspaces.
+	 * Evacuator calls this to get free space for refreshing inside and outside copyspaces.
 	 *
 	 * @param worker the calling evacuator
 	 * @param region the region (survivor or tenure) to obtain free space from
@@ -498,6 +498,14 @@ public:
 	 * @return a pointer to space allocated, which may be larger that the requested length, or NULL
 	 */
 	MM_Evacuator::Whitespace *getWhitespace(MM_Evacuator *worker, MM_Evacuator::Region region, uintptr_t length);
+
+	/**
+	 * Get the maximal size for allocation of whitespace (TLH) to refresh a copyspace
+	 *
+	 * @param region survivor or tenure
+	 * @return maximal size for allocation of whitespace (TLH) to refresh a copyspace
+	 */
+	uintptr_t maxWhitespaceAllocation(MM_Evacuator::Region region) { return _copyspaceAllocationCeiling[region]; }
 
 	/**
 	 * Evacuator calls this to get free space for solo objects.
@@ -508,6 +516,14 @@ public:
 	 * @return a pointer to space allocated, which will be the requested length, or NULL
 	 */
 	MM_Evacuator::Whitespace *getObjectWhitespace(MM_Evacuator *worker, MM_Evacuator::Region region, uintptr_t length);
+
+	/**
+	 * Get the maximal size for allocation of whitespace (TLH) to refresh a copyspace
+	 *
+	 * @param region survivor or tenure
+	 * @return maximal size for allocation of whitespace (TLH) to refresh a copyspace
+	 */
+	uintptr_t maxObjectAllocation(MM_Evacuator::Region region) { return _objectAllocationCeiling[region]; }
 
 	/* allocate and NULL-fill evacuator pointer array (evacuators are instantiated at gc start as required) */
 	static MM_Evacuator**

@@ -437,11 +437,11 @@ MM_Evacuator::scanComplete()
 {
 	/* the last wait is first charged as a pause (monitor wait) and must be discounted there and charged as an end */
 	uint64_t endTime = _metrics->_lastMonitorTime;
-	_metrics->_threadMetrics[MM_Evacuator::end_count] += 1;
-	_metrics->_threadMetrics[MM_Evacuator::end_ms] += endTime;
+	_metrics->_threadMetrics[end_count] += 1;
+	_metrics->_threadMetrics[end_ms] += endTime;
 	_metrics->_threadMetrics[_metrics->_lastMonitorMetric] -= 1;
 	_metrics->_threadMetrics[_metrics->_lastMonitorMetric + 1] -= endTime;
-	Debug_MM_true((MM_Evacuator::stall_count == _metrics->_lastMonitorMetric) || (MM_Evacuator::wait_count == _metrics->_lastMonitorMetric));
+	Debug_MM_true((stall_count == _metrics->_lastMonitorMetric) || (wait_count == _metrics->_lastMonitorMetric));
 }
 
 void
@@ -454,13 +454,13 @@ MM_Evacuator::push(ScanSpace *sp, Region region, uint8_t *copyhead, uint8_t *cop
 	Debug_MM_true((_stack <= sp) && (sp < _nil));
 	Debug_MM_true(nil(_sp) || (_sp + 1) == sp);
 	Debug_MM_true((_stack < sp) || nil(_sp));
+	Debug_MM_true(flagged(sp, isNull));
 	Debug_MM_address(copyhead);
 
-	Debug_MM_true(flagged(sp, isNull));
-	sp->_flags &= ~(uintptr_t)isNull;
 	_sp = sp;
 	_sp->_base = _sp->_scan = copyhead;
 	_sp->_end = copyend;
+	_sp->_flags &= ~(uintptr_t)isNull;
 	_sp->_flags |= region;
 	if (!flagged(_sp, isPulled)) {
 		_rp[region] = _sp;
@@ -563,6 +563,10 @@ MM_Evacuator::pop()
 		}
 		Debug_MM_true(inside(region)->_base == inside(region)->_copy);
 	} else {
+		Debug_MM_true((inside(survivor)->_base == inside(survivor)->_copy));
+		Debug_MM_true((inside(tenure)->_base == inside(tenure)->_copy));
+		Debug_MM_true((_rp[survivor]->_base == _rp[survivor]->_end));
+		Debug_MM_true((_rp[tenure]->_base == _rp[tenure]->_end));
 		/* empty stack */
 		_sp = _rp[survivor] = _rp[tenure] = _nil;
 	}
@@ -588,8 +592,8 @@ MM_Evacuator::pop()
 		_insideSizeMax = OMR_MIN(modal_inside_copy_size, _maxInsideCopySize);
 	} else {
 		/* continue or resume with normal inside copy size and distance limits */
-		_insideDistanceMax = _maxInsideCopyDistance;
 		_insideSizeMax = _maxInsideCopySize;
+		_insideDistanceMax = _maxInsideCopyDistance;
 	}
 
 	Debug_MM_true(nil(_sp) || (outside(region)->_base > _sp->_scan) || (_sp->_scan >= outside(region)->_end));
@@ -625,7 +629,7 @@ MM_Evacuator::copy(MM_ForwardedHeader *forwardedHeader)
 				case insideTenure:
 					/* copied to inside survivor/tenure copyspace */
 					if (_rp[region]->_end == copyhead) {
-						if ((copyhead > (_rp[region]->_base + _insideDistanceMax)) && !nil(_sp + 1)) {
+						if (!nil(_sp + 1) && (copyhead > (_rp[region]->_base + _insideDistanceMax))) {
 							/* clip scanspace endpoint and push copied object up to next frame */
 							_rp[region]->_end = copyhead;
 							push((_sp + 1), region,  copyhead, cp->_copy);
@@ -634,8 +638,9 @@ MM_Evacuator::copy(MM_ForwardedHeader *forwardedHeader)
 							_rp[region]->_end = cp->_copy;
 						}
 					} else {
-						Debug_MM_true(nil(_sp) || !nil(_sp + 1));
-						/* just push copied object to lowest emty pframe */
+						Debug_MM_true(!nil(_sp + 1));
+						Debug_MM_true(nil(_rp[region]) || (_rp[region] <= _sp));
+						/* first push to stack for region -- just push copied object to lowest empty frame */
 						push((nil(_sp) ? _stack : (_sp + 1)), region, copyhead, cp->_copy);
 					}
 					/* rebase inside copyspace to copy head */
@@ -646,7 +651,7 @@ MM_Evacuator::copy(MM_ForwardedHeader *forwardedHeader)
 				case outsideTenure:
 					Debug_MM_true(isConditionSet(copyspaceTailFillCondition(region)) == (0 < _copyspaceOverflow[region]));
 					/* copied to outside survivor/tenure copyspace, which may be able to release work */
-					if (isSplitablePointerArray(forwardedAddress, sizeAfterCopy)) {
+					if (isSplitablePointerArray(sizeAfterCopy)) {
 						/* split into multiple workspaces and add to worklist, rebase copyspace */
 						splitPointerArrayWork(cp, copyhead);
 					} else if (worksize(cp, _workReleaseThreshold) && whitesize(cp, _controller->_minimumWorkspaceSize)) {
@@ -657,7 +662,7 @@ MM_Evacuator::copy(MM_ForwardedHeader *forwardedHeader)
 				case overflow:
 					/* copied to overflow copyspace for distribution to worklist (non-leaf) or disposal (leaf) */
 					Debug_MM_true(isPrimitive == flagged(cp, isLeaves));
-					if (isSplitablePointerArray(forwardedAddress, sizeAfterCopy)) {
+					if (isSplitablePointerArray(sizeAfterCopy)) {
 						/* split into multiple workspaces and add to worklist, rebase copyspace */
 						splitPointerArrayWork(cp, copyhead);
 					} else if (!flagged(cp, isLeaves)) {
@@ -700,34 +705,34 @@ MM_Evacuator::selectCopyspace(Region *region, uintptr_t sizeAfterCopy, const boo
 		Debug_MM_true(!nil(_sp) || nil(_rp[selection]));
 
 		/* try inside copyspace if there is an open stack frame and not forcing outside */
-		if (!isForceOutsideCopyCondition(selection)) {
+		if (!isForceOutsideCopyCondition(selection, sizeAfterCopy)) {
 			CopySpace * const cp = inside(selection);
 			Debug_MM_true((cp->_copy == _rp[selection]->_end) || nil(_rp[selection]) || (_rp[selection]->_scan < cp->_base) || (cp->_end <= _rp[selection]->_scan));
-			Debug_MM_true((NULL == cp->_base) || (source(cp) == selection));
+			Debug_MM_true((source(cp) == selection) || (NULL == cp->_base));
 			/* use inside copyspace for small objects and objects that stick to referring object (cached) */
-			if (whitesize(cp, sizeAfterCopy)) {
-				/* cached means referring slot (scan head + scanner slot offset) and header slot of referent (copy head) are mapped into same L1 cache line */
-				if ((sizeAfterCopy <= _insideSizeMax) || (!isConditionSet(indexable_object) && cached(cp->_copy))) {
-					/* select inside copyspace */
-					*region = selection;
-					return cp;
-				}
-			} else if ((sizeAfterCopy <= _insideSizeMax) && !isPrimitive) {
-				/* refresh and select inside copyspace if there is no unscanned work and remaining whitespace is disposable */
-				if ((cp->_base == cp->_copy) && !whitesize(cp, max_scanspace_remainder)
+			if (whitesize(cp, sizeAfterCopy) && ((sizeAfterCopy <= _insideSizeMax) || (!isConditionSet(indexable_object) && cached(cp->_copy)))) {
+				/* select inside copyspace */
+				*region = selection;
+				return cp;
+			} else if (!whitesize(cp, max_scanspace_remainder) && (sizeAfterCopy <= _insideSizeMax) && !isPrimitive && !nil(_sp + 1)
 				&& refresh(cp, selection, sizeAfterCopy, false)
-				) {
-					/* select inside copyspace */
-					*region = selection;
-					return cp;
-				}
+			) {
+				/* refresh inside copyspace if remaining whitespace is disposable (all remaining scan work is mapped in the stack) */
+				Debug_MM_true(!nil(_sp + 1) || !nil(_rp[selection]));
+				/* select inside copyspace */
+				*region = selection;
+				return cp;
+			} else if (!isPrimitive && nil(_sp + 1) && !isConditionSet(stack_overflow)) {
+				/* set stack overflow condition on first copy thrown to outside copyspace from scanspace in topmost frame */
+				setCondition(stack_overflow, true);
 			}
-		} else if (nil(_sp + 1) && !isConditionSet(stack_overflow)) {
-			/* set stack overflow condition on first copy out of scanspace in topmost frame */
+		} else if (!isPrimitive && nil(_sp + 1) && !isConditionSet(stack_overflow)) {
+			/* set stack overflow condition on first copy thrown to outside copyspace from scanspace in topmost frame */
 			setCondition(stack_overflow, true);
 		}
 
 		/* select outside copyspace if object fits in remaining whitespace, unless forcing primitive objects to overflow */
+		Debug_MM_true((0 < _copyspaceOverflow[selection]) == isConditionSet(copyspaceTailFillCondition(selection)));
 		if (!isForceOverflowCopyCondition(selection, isPrimitive, sizeAfterCopy)) {
 			CopySpace * const outsideCp = outside(selection);
 			Debug_MM_true((NULL == outsideCp->_base) || source(outsideCp) == selection);
@@ -755,12 +760,12 @@ MM_Evacuator::selectCopyspace(Region *region, uintptr_t sizeAfterCopy, const boo
 					return outsideCp;
 				}
 			}
-			/* start tracking outside overflow and redirecting object copy for source region to outside copyspace to consume remaining whitespace */
+			/* start/continue tracking outside overflow and redirecting object copy for source region to outside copyspace to consume remaining whitespace */
 			Debug_MM_true((0 < _copyspaceOverflow[selection]) == isConditionSet(copyspaceTailFillCondition(selection)));
 			setCondition(copyspaceTailFillCondition(selection), true);
 			_copyspaceOverflow[selection] += sizeAfterCopy;
 			/* if no refresh try to deflect copy into the inside copyspace for the source region */
-			if (!isForceOutsideCopyCondition(selection)) {
+			if (!isForceOutsideCopyCondition(selection, sizeAfterCopy)) {
 				CopySpace * const insideCp = inside(selection);
 				if (whitesize(insideCp, sizeAfterCopy)) {
 					/* copy into inside copyspace for scanning inside the stack */
@@ -769,6 +774,13 @@ MM_Evacuator::selectCopyspace(Region *region, uintptr_t sizeAfterCopy, const boo
 				}
 			}
 		}
+
+		Debug_MM_true((0 < _copyspaceOverflow[selection]) == isConditionSet(copyspaceTailFillCondition(selection))
+				&& ((_copyspaceOverflow[selection] <= _controller->getWorkDistributionQuota())
+				|| isForceOverflowCopyCondition(selection, isPrimitive, sizeAfterCopy)
+				|| (sizeAfterCopy >= OMR_MAX(_controller->maxWhitespaceAllocation(selection), _controller->maxObjectAllocation(selection)))
+				|| (whitesize(outside(selection), max_copyspace_remainder) && !scanner(_sp)->isIndexableObject() && (_copyspaceOverflow[selection] <= _controller->getWorkDistributionQuota())))
+		);
 
 		/* select overflow copyspace as a last resort */
 		CopySpace * const overflowCp = &_copyspace[overflow];
@@ -789,7 +801,7 @@ MM_Evacuator::selectCopyspace(Region *region, uintptr_t sizeAfterCopy, const boo
 		}
 
 		/* record failure stats if no whitespace in selected region */
-		if (MM_Evacuator::survivor == selection) {
+		if (survivor == selection) {
 			_stats->_failedFlipCount += 1;
 			_stats->_failedFlipBytes += sizeAfterCopy;
 		} else {
@@ -960,20 +972,36 @@ MM_Evacuator::refresh(CopySpace *copyspace, Region region, uintptr_t size, bool 
 			/* refresh from whitelist */
 			whitespace = _whiteList[region].top(size);
 		} else if (index(copyspace) < overflow) {
-			/* if overflow copyspace holds whitespace from region trim it into inside/outside copyspace */
-			CopySpace * const ovcp = &_copyspace[overflow];
-			if ((region == source(ovcp)) && whitesize(ovcp, size)) {
-				whitespace = trim(ovcp);
+			/* try to refresh inside/outside copyspace from overflow copyspace */
+			CopySpace * const overflowCp = &_copyspace[overflow];
+			if ((region == source(overflowCp)) && whitesize(overflowCp, size)) {
+				whitespace = trim(overflowCp);
+			} else if (index(copyspace) < outsideSurvivor) {
+				/* try to refresh inside copyspace with whitespace from outside copyspace */
+				CopySpace * const outsideCp = outside(region);
+				if (whitesize(outsideCp, size)) {
+					/* trim whitespace from outside copyspace to refresh inside copyspace */
+					whitespace = Whitespace::whitespace(outsideCp->_end - size, size,  whiteFlags(flagged(outsideCp, isLOA)));
+					outsideCp->_end -= size;
+				}
+			} else {
+				/* inside deflection may have been inhibited when considering outside copy */
+				CopySpace * const insideCp = inside(region);
+				if ((region == source(insideCp)) && whitesize(insideCp, size)) {
+					/* trim whitespace from inside copyspace to refresh outside copyspace */
+					whitespace = Whitespace::whitespace(insideCp->_end - size, size,  whiteFlags(flagged(insideCp, isLOA)));
+					insideCp->_end -= size;
+				}
 			}
 		} else {
 			/* refresh overflow copyspace from inside/outside copyspace for region */
 			CopySpace * const in = inside(region);
 			CopySpace * const out = outside(region);
-			CopySpace * const max = ((in->_end - in->_copy) > (out->_end - out->_copy)) ? in : out;
-			if (whitesize(max, size)) {
-				uintptr_t flags = whiteFlags(flagged(max, isLOA));
-				whitespace = Whitespace::whitespace(max->_end - size, size, flags);
-				max->_end -= size;
+			CopySpace * const maxCp = ((in->_end - in->_copy) > (out->_end - out->_copy)) ? in : out;
+			if (whitesize(maxCp, size)) {
+				/* trim whitespace from inside copyspace to refresh outside copyspace */
+				whitespace = Whitespace::whitespace(maxCp->_end - size, size,  whiteFlags(flagged(maxCp, isLOA)));
+				maxCp->_end -= size;
 			}
 		}
 	}
@@ -1449,7 +1477,7 @@ MM_Evacuator::splitPointerArrayWork(CopySpace *copyspace, uint8_t *arrayAddress)
 }
 
 bool
-MM_Evacuator::selectCondition(MM_Evacuator::ConditionFlag condition, bool force)
+MM_Evacuator::selectCondition(ConditionFlag condition, bool force)
 {
 	const bool previously = isConditionSet(condition);
 
@@ -1461,7 +1489,7 @@ MM_Evacuator::selectCondition(MM_Evacuator::ConditionFlag condition, bool force)
 }
 
 void
-MM_Evacuator::setCondition(MM_Evacuator::ConditionFlag condition, bool value)
+MM_Evacuator::setCondition(ConditionFlag condition, bool value)
 {
 	Debug_MM_true(((uintptr_t)1 << MM_Math::floorLog2((uintptr_t)condition)) == (uintptr_t)condition);
 
@@ -1496,23 +1524,24 @@ MM_Evacuator::isBreadthFirstCondition() const
 }
 
 bool
-MM_Evacuator::isForceOutsideCopyCondition(MM_Evacuator::Region region) const
+MM_Evacuator::isForceOutsideCopyCondition(Region region, uintptr_t size) const
 {
-	/* include copyspace tail filling condition for specific region as outside forcing condition */
-	return nil(_sp + 1)
-		|| (isConditionSet(indexable_object) && isConditionSet(stall | stack_overflow))
-		|| isConditionSet(breadth_first_always | breadth_first_roots | copyspaceTailFillCondition(region));
+	/* force outside pointer arrays if splitable or pumping worklist volume, everything for breadth-first copy or tail filling */
+	return (isConditionSet(indexable_object) && (isConditionSet(stall | stack_overflow)))
+		|| isConditionSet(copyspaceTailFillCondition(region) | breadth_first_always | breadth_first_roots)
+		|| (nil(_sp + 1) && (nil(_rp[region]) || (_sp->_base < _sp->_scan))
+	);
 }
 
 bool
-MM_Evacuator::isForceOverflowCopyCondition(MM_Evacuator::Region region, bool isPrimitive, uintptr_t sizeAfterCopy) const
+MM_Evacuator::isForceOverflowCopyCondition(Region region, bool isPrimitive, uintptr_t size) const
 {
 	/* direct leaf objects to overflow copyspace unless tail filling to clear whitespace or stall/stack overflow condition set to accelerate work release */
 	return isPrimitive && !isConditionSet(stall | stack_overflow | copyspaceTailFillCondition(region));
 }
 
 MM_Evacuator::ConditionFlag
-MM_Evacuator::copyspaceTailFillCondition(MM_Evacuator::Region region) const
+MM_Evacuator::copyspaceTailFillCondition(Region region) const
 {
 	/* return copyspace overflow condition for the specific region */
 	return (ConditionFlag)((uintptr_t)survivor_tail_fill << region);
@@ -1619,10 +1648,9 @@ MM_Evacuator::isLargeObject(const uintptr_t objectSizeInBytes) const
 }
 
 bool
-MM_Evacuator::isSplitablePointerArray(omrobjectptr_t object, const uintptr_t objectSizeInBytes) const
+MM_Evacuator::isSplitablePointerArray(const uintptr_t objectSizeInBytes) const
 {
 	/* this will not work if indexable_object becomes a selectable scan option */
-	Debug_MM_true(isConditionSet(indexable_object) == _delegate.isIndexablePointerArray(object));
 	Debug_MM_true(0 == (indexable_object & options_mask));
 	
 	/* only large pointer arrays can be split into segments */
@@ -1757,7 +1785,7 @@ MM_Evacuator::receiveWhitespace(Region region, Whitespace *whitespace)
 }
 
 void
-MM_Evacuator::flushWhitespace(MM_Evacuator::Region region)
+MM_Evacuator::flushWhitespace(Region region)
 {
 	/* recycle survivor whitespace back into the memory pool at end of gc cycle, recycle tenure at start of global gc */
 	_whiteList[region].flush();

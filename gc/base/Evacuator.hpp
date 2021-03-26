@@ -202,12 +202,12 @@ private:
 	MMINLINE bool areConditionsSet(uintptr_t conditions) const;
 	MMINLINE bool isConditionSet(uintptr_t conditions) const;
 	MMINLINE ConditionFlag copyspaceTailFillCondition(Region region) const;
-	MMINLINE bool isForceOutsideCopyCondition(Region region) const;
-	MMINLINE bool isForceOverflowCopyCondition(MM_Evacuator::Region region, bool isPrimitive, uintptr_t sizeAfterCopy) const;
+	MMINLINE bool isForceOutsideCopyCondition(Region region, uintptr_t size) const;
+	MMINLINE bool isForceOverflowCopyCondition(Region region, bool isPrimitive, uintptr_t size) const;
 	MMINLINE bool isBreadthFirstCondition() const;
 
 	/* object geometry */
-	MMINLINE bool isSplitablePointerArray(omrobjectptr_t object, uintptr_t objectSizeInBytes) const;
+	MMINLINE bool isSplitablePointerArray(uintptr_t objectSizeInBytes) const;
 	MMINLINE bool isLargeObject(const uintptr_t objectSizeInBytes) const;
 
 	/* object age */

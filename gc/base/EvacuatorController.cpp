@@ -497,13 +497,12 @@ MM_EvacuatorController::calculateOptimalWhitespaceSize(MM_Evacuator::Region regi
 		for (uintptr_t taskIndex = 0; taskIndex < _dispatcher->threadCount(); taskIndex += 1) {
 			allocatedVolume += _evacuatorMetrics[taskIndex]->_volumeMetrics[MM_Evacuator::survivor_alloc];
 		}
-		uintptr_t optimalAllocationSize = _minimumCopyspaceSize;
-		intptr_t availableWhitespace = (_heapLayout[region][1] - _heapLayout[region][0]) - allocatedVolume;
-		if ((intptr_t)optimalAllocationSize <= availableWhitespace) {
-			optimalAllocationSize = alignToObjectSize((uintptr_t)(availableWhitespace / (MM_Evacuator::copyspaces * _evacuatorCount)));
+		intptr_t survivorWhitespace = (_heapLayout[region][1] - _heapLayout[region][0]) - allocatedVolume;
+		intptr_t reserveWhitespace = MM_Evacuator::copyspaces * _maximumCopyspaceSize * _evacuatorCount;
+		uintptr_t optimalAllocationSize = _maximumCopyspaceSize;
+		if (survivorWhitespace <= reserveWhitespace) {
+			optimalAllocationSize = alignToObjectSize((uintptr_t)(survivorWhitespace / (MM_Evacuator::copyspaces * _evacuatorCount)));
 			optimalAllocationSize = OMR_MAX(OMR_MIN(_maximumCopyspaceSize, optimalAllocationSize), _minimumCopyspaceSize);
-		} else {
-			optimalAllocationSize = 0;
 		}
 		/* lower the object allocation ceiling for the region if forced to accept suboptimal size*/
 		if (optimalAllocationSize < _copyspaceAllocationCeiling[region]) {
