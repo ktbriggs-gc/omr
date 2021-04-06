@@ -34,6 +34,15 @@ class MM_EnvironmentBase;
 
 #include "Math.hpp"
 
+/* from scavenger.cpp (CACHE_LINE_SIZE) */
+#if defined(J9ZOS390) || (defined(LINUX) && defined(S390))
+#define EVACUATOR_CACHE_LINE 256
+#elif defined(AIXPPC) || defined(LINUXPPC)
+#define EVACUATOR_CACHE_LINE 128
+#else
+#define EVACUATOR_CACHE_LINE 64
+#endif /* defined(J9ZOS390) || (defined(LINUX) && defined(S390)) */
+
 #define OMR_SCAVENGER_DISTANCE_BINS 2
 #define OMR_SCAVENGER_WORKSIZE_BINS 32
 #define OMR_SCAVENGER_CACHESIZE_BINS 32
@@ -142,7 +151,7 @@ public:
 	uint64_t _tenureExpandedTime; /**< Time taken expanding the heap in order to complete the collection, in hi-res ticks */
 
 	uint64_t _leafObjectCount;
-	uint64_t _copy_distance_counts[OMR_SCAVENGER_DISTANCE_BINS];
+	uint64_t _copy_distance_counts[2][OMR_SCAVENGER_DISTANCE_BINS];
 	uint64_t _copy_cachesize_counts[OMR_SCAVENGER_CACHESIZE_BINS];
 	uint64_t _work_packetsize_counts[OMR_SCAVENGER_WORKSIZE_BINS];
 	uint64_t _object_volume_counts[OMR_SCAVENGER_OBJECT_BINS+1];
@@ -226,9 +235,12 @@ public:
 #endif /* J9MODRON_TGC_PARALLEL_STATISTICS */
 
 	MMINLINE void
-	countCopyDistance(uintptr_t fromAddr, uintptr_t toAddr)
+	countCopyDistance(intptr_t region, uintptr_t fromAddr, uintptr_t toAddr)
 	{
-		_copy_distance_counts[(64 > (fromAddr ^ toAddr)) ? 0 : 1] += 1;
+		if ((EVACUATOR_CACHE_LINE > (fromAddr ^ toAddr))) {
+			_copy_distance_counts[region][0] += 1;
+		}
+		_copy_distance_counts[region][1] += 1;
 	}
 
 	MMINLINE void

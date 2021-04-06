@@ -171,14 +171,14 @@ private:
 	/* copy workflow: copy evacuation referents scanned from _sp->_object into survivor/tenure copyspaces, filling copyspaces with scan work */
 	omrobjectptr_t copy(MM_ForwardedHeader *forwardedHeader);
 	MMINLINE bool cached(const uint8_t *copyhead) const;
-	MMINLINE CopySpace *selectCopyspace(Region *selected, uintptr_t sizeAfterCopy, const bool isLeaf);
+	MMINLINE CopySpace *selectCopyspace(Region *selected, uintptr_t sizeAfterCopyf);
 	MMINLINE omrobjectptr_t copyForward(MM_ForwardedHeader *forwardedHeader, CopySpace *copyspace, const uintptr_t sizeBeforeCopy, const uintptr_t sizeAfterCopy);
 	MMINLINE bool remember(omrobjectptr_t object, uintptr_t rememberedState);
 	MMINLINE uint8_t *rebase(CopySpace *copyspace, uintptr_t *volume);
 	MMINLINE bool worksize(const CopySpace *copyspace, uintptr_t size) const;
 	MMINLINE bool whitesize(const CopySpace *copyspace, uintptr_t size) const;
 	MMINLINE uintptr_t whiteFlags(bool isLoa) const;
-	bool refresh(CopySpace *copyspace, Region region, uintptr_t size, bool isLeaf);
+	bool refresh(CopySpace *copyspace, Region region, uintptr_t size);
 	MMINLINE Whitespace *trim(CopySpace *copyspace);
 	MMINLINE void reset(CopySpace *copyspace) const;
 	MMINLINE Region source(const CopySpace *copyspace) const;
@@ -203,8 +203,9 @@ private:
 	MMINLINE bool isConditionSet(uintptr_t conditions) const;
 	MMINLINE ConditionFlag copyspaceTailFillCondition(Region region) const;
 	MMINLINE bool isForceOutsideCopyCondition(Region region, uintptr_t size) const;
-	MMINLINE bool isForceOverflowCopyCondition(Region region, bool isPrimitive, uintptr_t size) const;
+	MMINLINE bool isForceOverflowCopyCondition(Region region, uintptr_t size) const;
 	MMINLINE bool isBreadthFirstCondition() const;
+	MMINLINE bool isLeafCondition() const;
 
 	/* object geometry */
 	MMINLINE bool isSplitablePointerArray(uintptr_t objectSizeInBytes) const;

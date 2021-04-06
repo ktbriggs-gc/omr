@@ -32,8 +32,6 @@
 #undef EVACUATOR_DEBUG_TRACE	/* enables scavenger remembered set tracing (if EVACUATOR_DEBUG or EVACUATOR_DEBUG_ALWAYS are defined) */
 #undef EVACUATOR_DEBUG_ALWAYS	/* enables metrics gathering and reporting */
 
-#define EVACUATOR_DEBUG_ALWAYS
-
 #if defined(EVACUATOR_DEBUG) && defined(EVACUATOR_DEBUG_ALWAYS)
 #error "EVACUATOR_DEBUG and EVACUATOR_DEBUG_ALWAYS are mutually exclusive"
 #endif /* defined(EVACUATOR_DEBUG) && defined(EVACUATOR_DEBUG_ALWAYS) */
@@ -108,15 +106,6 @@
 /* delegate can define additional flags in bits [16-31]; bits [32-63] are reserved for a debug heap address */
 #define EVACUATOR_DEBUG_DELEGATE_BASE 0x10000
 #define EVACUATOR_DEBUG_DELEGATE_TOP 0x80000000
-
-/* from scavenger.cpp (CACHE_LINE_SIZE) */
-#if defined(J9ZOS390) || (defined(LINUX) && defined(S390))
-#define EVACUATOR_CACHE_LINE 256
-#elif defined(AIXPPC) || defined(LINUXPPC)
-#define EVACUATOR_CACHE_LINE 128
-#else
-#define EVACUATOR_CACHE_LINE 64
-#endif /* defined(J9ZOS390) || (defined(LINUX) && defined(S390)) */
 
 class MM_EnvironmentStandard;
 
@@ -284,23 +273,27 @@ public:
 
 	/* Enumeration of conditions that relate to evacuator operation (superset of evacuatorScanOptions */
 	typedef enum ConditionFlag {
-		  stack_overflow = 1			/* forcing outside copy and minimal work release threshold while winding down stack after stack overflow */
-		, survivor_tail_fill = 2		/* forcing outside copy to fill survivor outside copyspace remainder */
-		, tenure_tail_fill = 4			/* forcing outside copy to fill tenure outside copyspace remainder */
-		, stall = 8						/* forcing minimal work release threshold while distributing outside copy to stalled evacuators */
-		, breadth_first_roots = 16		/* forcing outside copy for root objects */
-		, scan_remembered = 32			/* this is raised while scanning the remembered set */
-		, scan_roots = 64				/* this is raised while scanning the root set */
-		, scan_worklist = 128			/* this is raised while scanning the worklist */
-		, scan_clearable = 256			/* this is raised while delegating to clearing stages */
-		, indexable_object = 512		/* this is raised while copying a pointer array object */
-		, breadth_first_always = 1024	/* forcing outside copy for all objects all the time */
-		, conditions_mask = 2047		/* bit mask covering above flags */
-		, condition_states = 2048		/* number of possible condition combinations */
-		, condition_count = 11			/* number of conditions */
-		, initial_mask = (0)
+		  breadth_first_always = 1		/* forcing outside copy for all objects all the time */
+		, stack_overflow = 2			/* forcing outside copy and minimal work release threshold while winding down stack after stack overflow */
+		, survivor_tail_fill = 4		/* forcing outside copy to fill survivor outside copyspace remainder */
+		, tenure_tail_fill = 8			/* forcing outside copy to fill tenure outside copyspace remainder */
+		, stall = 16					/* forcing minimal work release threshold while distributing outside copy to stalled evacuators */
+		, breadth_first_roots = 32		/* forcing outside copy for root objects */
+		, scan_remembered = 64			/* this is raised while scanning the remembered set */
+		, scan_roots = 128				/* this is raised while scanning the root set */
+		, scan_worklist = 256			/* this is raised while scanning the worklist */
+		, scan_clearable = 512			/* this is raised while delegating to clearing stages */
+		, pointer_array = 1024			/* this is raised while copying a pointer array object */
+		, leaf_object = 2048			/* this is present while copying an instance of a class defining no reference fields (aka primitive object) */
+		, indexed_primitive = 4096		/* this is raised while copying an array of primitive data */
+		, conditions_mask = 8191		/* bit mask covering above flags including primitive bits */
+		, condition_states = 8192		/* number of possible combinations of conditions included in conditions mask*/
+		, condition_count = 13			/* number of conditions included in conditions mask */
+		, initial_mask = (breadth_first_always)
 		, options_mask = (breadth_first_roots | breadth_first_always)
 		, outside_mask = (options_mask)
+		, classification_mask = (pointer_array | leaf_object | indexed_primitive)
+		, classification_shift = 10
 	} ConditionFlag;
 
 	/* Evacuator metrics store. All metrics are additive across threads and are aggregated when evacuators exit rendezvous with controller. */
@@ -345,9 +338,6 @@ public:
 
 	/* smallest allowable setting for work release threshold overrides controller's minimum workspace size */
 	static const uintptr_t min_workspace_release = min_workspace_size;
-
-	/* number of bits to shift object classification bits into condition flags */
-	static const uintptr_t classification_shift = 9;
 
 	/* per thread volume/thread/condition metrics */
 	Metrics *_metrics;
@@ -499,10 +489,10 @@ public:
 	, _forge(_extensions->getForge())
 	, _sizeofObjectReferenceSlot(extensions->compressObjectReferences() ? sizeof(uint32_t) : sizeof(uintptr_t))
 	, _evacuatorTraceOptions(_extensions->evacuatorTraceOptions)
-	, _evacuatorScanOptions(selectedScanOptions(_extensions) | ((uintptr_t)conditions_mask & ~(uintptr_t)options_mask))
+	, _evacuatorScanOptions(_extensions->evacuatorScanOptions)
 	, _metrics(NULL)
 	{
-		Assert_MM_true(indexable_object == (1 << classification_shift));
+		Assert_MM_true(pointer_array == (1 << classification_shift));
 	}
 };
 

@@ -780,7 +780,8 @@ MM_Scavenger::mergeGCStatsBase(MM_EnvironmentBase *env, MM_ScavengerStats *final
 
 #if defined(OMR_SCAVENGER_TRACK_COPY_DISTANCE)
 	for (uintptr_t i = 0; i < OMR_SCAVENGER_DISTANCE_BINS; i++) {
-		finalGCStats->_copy_distance_counts[i] += scavStats->_copy_distance_counts[i];
+		finalGCStats->_copy_distance_counts[MM_Evacuator::survivor][i] += scavStats->_copy_distance_counts[MM_Evacuator::survivor][i];
+		finalGCStats->_copy_distance_counts[MM_Evacuator::tenure][i] += scavStats->_copy_distance_counts[MM_Evacuator::tenure][i];
 	}
 #endif /* OMR_SCAVENGER_TRACK_COPY_DISTANCE */
 	for (uintptr_t i = 0; i < OMR_SCAVENGER_WORKSIZE_BINS; i++) {
@@ -1697,7 +1698,6 @@ MM_Scavenger::copy(MM_EnvironmentStandard *env, void *referringAddress, MM_Forwa
 		MM_ScavengerStats *scavStats = &env->_scavengerStats;
 #if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
 		scavStats->countObjectSize(objectReserveSizeInBytes);
-		scavStats->countCopyDistance((uintptr_t)referringAddress, (uintptr_t)destinationObjectPtr);
 #endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 		if(copyCache->flags & OMR_SCAVENGER_CACHE_TYPE_TENURESPACE) {
 			scavStats->_tenureAggregateCount += 1;
@@ -1709,12 +1709,18 @@ MM_Scavenger::copy(MM_EnvironmentStandard *env, void *referringAddress, MM_Forwa
 				scavStats->_tenureLOABytes += objectCopySizeInBytes;
 			}
 #endif /* OMR_GC_LARGE_OBJECT_AREA */
+#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+			scavStats->countCopyDistance(1, (uintptr_t)referringAddress, (uintptr_t)destinationObjectPtr);
+#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 		} else {
 			Assert_MM_true(copyCache->flags & OMR_SCAVENGER_CACHE_TYPE_SEMISPACE);
 			scavStats->_flipCount += 1;
 			scavStats->_flipBytes += objectCopySizeInBytes;
 			scavStats->_hashBytes += (objectReserveSizeInBytes - objectCopySizeInBytes);
 			scavStats->getFlipHistory(0)->_flipBytes[oldObjectAge + 1] += objectReserveSizeInBytes;
+#if defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS)
+			scavStats->countCopyDistance(0, (uintptr_t)referringAddress, (uintptr_t)destinationObjectPtr);
+#endif /* defined(EVACUATOR_DEBUG) || defined(EVACUATOR_DEBUG_ALWAYS) */
 		}
 	} else {
 		/* We have not used the reserved space now, but we will for subsequent allocations. If this space was reserved for an individual object,

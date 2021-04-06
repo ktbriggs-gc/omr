@@ -344,7 +344,7 @@ MM_EvacuatorController::getWorkReleaseThreshold() const
 uintptr_t
 MM_EvacuatorController::getWorkDistributionQuota() const
 {
-	return (_minimumCopyspaceSize << 1);
+	return (_minimumWorkspaceSize << 1);
 }
 
 void
@@ -449,10 +449,15 @@ MM_EvacuatorController::aggregateEvacuatorMetrics(MM_EnvironmentStandard *env)
 		for (intptr_t counter = 0; counter <= MM_Evacuator::array_counters; counter += 1) {
 			_aggregateMetrics._arrayVolumeCounts[counter] += metrics->_arrayVolumeCounts[counter];
 		}
-		for (intptr_t metric = 0; metric < MM_Evacuator::condition_states; metric += 1) {
-			_aggregateMetrics._conditionMetrics[metric] += metrics->_conditionMetrics[metric];
+		if (MM_Evacuator::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_CONDITIONS)) {
+			for (intptr_t metric = 0; metric < MM_Evacuator::condition_states; metric += 1) {
+				Debug_MM_true((0 == (metric & MM_Evacuator::scan_clearable)) || (0 == metrics->_conditionMetrics[metric]) || (0 == (metric & (MM_Evacuator::scan_roots | MM_Evacuator::scan_remembered))));
+				_aggregateMetrics._conditionMetrics[metric] += metrics->_conditionMetrics[metric];
+				Debug_MM_true((0 == (metric & MM_Evacuator::scan_clearable)) || (0 == _aggregateMetrics._conditionMetrics[metric]) || (0 == (metric & (MM_Evacuator::scan_roots | MM_Evacuator::scan_remembered))));
+			}
 		}
-		for (intptr_t metric = 0; metric < MM_Evacuator::thread_metrics; metric += 1) {
+		intptr_t end = MM_Evacuator::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_CONDITIONS) ? MM_Evacuator::thread_metrics : MM_Evacuator::stalled;
+		for (intptr_t metric = 0; metric < end; metric += 1) {
 			_aggregateMetrics._threadMetrics[metric] += metrics->_threadMetrics[metric];
 		}
 	}
@@ -799,13 +804,14 @@ MM_EvacuatorController::printMetrics(MM_EnvironmentBase *env)
 	uint64_t elapsedMicros = omrtime_hires_delta(collectionStats->_startTime, collectionStats->_endTime, OMRPORT_TIME_DELTA_IN_MICROSECONDS);
 	uint64_t userNanos = collectionStats->_endProcessTimes._userTime - collectionStats->_startProcessTimes._userTime;
 	uint64_t sysNanos = collectionStats->_endProcessTimes._systemTime - collectionStats->_startProcessTimes._systemTime;
-	double cachePct = 100.0 * ((double)(stats->_copy_distance_counts[0]) / (double)(stats->_copy_distance_counts[0] + stats->_copy_distance_counts[1]));
 	double elapsedMs = (double)omrtime_hires_delta(0, elapsedMicros, OMRPORT_TIME_DELTA_IN_MICROSECONDS) / (double)1000;
 	double aggregateCpuPct = 100.0 * ((double)(userNanos + sysNanos) / (double)(1000 * elapsedMicros));
 	double kbPerMs = (double)(volume[0] + volume[1]) / ((double)1024 * elapsedMs);
-	omrtty_printf("%8lu:    gc end; survivor:%llu tenure:%llu scanned:%llu; pulled:%llu; leaf:%llu; frag:%llu; realms:%0.3f; kb/ms:%0.3f; cache%%:%0.3f; cpu%%:%0.3f; yielded:%llu; switched:%llu\n", _extensions->scavengerStats._gcCount,
-			volume[0], volume[1], volume[2], _aggregateMetrics._threadMetrics[MM_Evacuator::pulled_volume], volume[3], volume[4], elapsedMs, kbPerMs, cachePct, aggregateCpuPct,
-			collectionStats->_endProcessStats._switched - collectionStats->_startProcessStats._switched,
+	omrtty_printf("%8lu:    gc end; survivor:%llu tenure:%llu scanned:%llu; pulled:%llu; leaf:%llu; frag:%llu; realms:%0.3f; kb/ms:%0.3f; Sc%%:%0.3f; Tc%%:%0.3f; cpu%%:%0.3f; yielded:%llu; switched:%llu\n", _extensions->scavengerStats._gcCount,
+			volume[0], volume[1], volume[2], _aggregateMetrics._threadMetrics[MM_Evacuator::pulled_volume], volume[3], volume[4], elapsedMs, kbPerMs,
+			100.0 * ((double)(stats->_copy_distance_counts[MM_Evacuator::survivor][0]) / (double)OMR_MAX(1, stats->_copy_distance_counts[MM_Evacuator::survivor][1])),
+			100.0 * ((double)(stats->_copy_distance_counts[MM_Evacuator::tenure][0]) / (double)OMR_MAX(1, stats->_copy_distance_counts[MM_Evacuator::tenure][1])),
+			aggregateCpuPct, collectionStats->_endProcessStats._switched - collectionStats->_startProcessStats._switched,
 			collectionStats->_endProcessStats._yielded - collectionStats->_startProcessStats._yielded);
 	omrtty_printf("%8lu:   objects:", _extensions->scavengerStats._gcCount);
 	uintptr_t objectCount = 0;
@@ -813,6 +819,8 @@ MM_EvacuatorController::printMetrics(MM_EnvironmentBase *env)
 		omrtty_printf(" %lld", stats->_object_volume_counts[bin]);
 		objectCount += stats->_object_volume_counts[bin];
 	}
+	Debug_MM_true(objectCount == (stats->_copy_distance_counts[MM_Evacuator::survivor][1] + stats->_copy_distance_counts[MM_Evacuator::tenure][1]));
+	Debug_MM_true(objectCount == _aggregateMetrics._volumeMetrics[MM_Evacuator::objects]);
 	omrtty_printf(" %lld %lld\n", objectCount, stats->_object_volume_counts[OMR_SCAVENGER_OBJECT_BINS]);
 	omrtty_printf("%8lu:    arrays:", _extensions->scavengerStats._gcCount);
 	uintptr_t arrayCount = 0;
@@ -870,7 +878,7 @@ MM_EvacuatorController::printMetrics(MM_EnvironmentBase *env)
 				metrics->_threadMetrics[MM_Evacuator::stall_count], metrics->_threadMetrics[MM_Evacuator::wait_count],
 				runPct, cpuPct, stallPct, waitPct, endPct);
 	}
-	if (_extensions->isEvacuatorEnabled()) {
+	if (_extensions->isEvacuatorEnabled() && MM_Evacuator::isTraceOptionSelected(_extensions, EVACUATOR_DEBUG_CONDITIONS)) {
 		const uintptr_t groups = threads * threads;
 		const uintptr_t *stalls = &_aggregateMetrics._threadMetrics[MM_Evacuator::stalled];
 		for (uintptr_t group = 0; group < groups; group += 1) {
