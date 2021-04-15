@@ -904,7 +904,7 @@ MM_EvacuatorController::printMetrics(MM_EnvironmentBase *env)
 				conditions >>= 1;
 			}
 		}
-		for (uintptr_t condition = 0; condition < MM_Evacuator::condition_count; condition += 1) {
+		for (intptr_t condition = MM_Evacuator::condition_count - 1; 0 <= condition; condition -= 1) {
 			if (0 < counts[condition]) {
 				omrtty_printf(" %s:%llu", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition), counts[condition]);
 			}
@@ -913,12 +913,10 @@ MM_EvacuatorController::printMetrics(MM_EnvironmentBase *env)
 		for (uintptr_t metric = 0; metric < MM_Evacuator::condition_states; metric += 1) {
 			if (0 < _aggregateMetrics._conditionMetrics[metric]) {
 				omrtty_printf("%8lu:%10llu;", _extensions->scavengerStats._gcCount, _aggregateMetrics._conditionMetrics[metric]);
-				uintptr_t conditions = metric;
-				for (uintptr_t condition = 0; (0 < conditions) && (condition < MM_Evacuator::condition_count); condition += 1) {
-					if (1 == (1 & conditions)) {
+				for (intptr_t condition = MM_Evacuator::condition_count - 1; 0 <= condition; condition -= 1) {
+					if (0 != ((1 << condition) & metric)) {
 						omrtty_printf(" %s", MM_Evacuator::conditionName((MM_Evacuator::ConditionFlag)condition));
 					}
-					conditions >>= 1;
 				}
 				omrtty_printf("\n");
 			}

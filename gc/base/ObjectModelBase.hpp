@@ -55,9 +55,9 @@ struct OMR_VMThread;
  * Object classification bits for calculateObjectDetailsForCopy(). This partition covers live set of objects in the heap.
  */
 #define OMR_GC_MIXED_OBJECT		0
-#define OMR_GC_POINTER_ARRAY	1
-#define OMR_GC_PRIMITIVE_OBJECT	2
-#define OMR_GC_PRIMITIVE_ARRAY	4
+#define OMR_GC_PRIMITIVE_OBJECT	1
+#define OMR_GC_PRIMITIVE_ARRAY	2
+#define OMR_GC_POINTER_ARRAY	4
 
 /**
  * Provides information for a given object.

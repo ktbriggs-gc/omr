@@ -632,7 +632,7 @@ MM_Evacuator::copy(MM_ForwardedHeader *forwardedHeader)
 		uintptr_t sizeBeforeCopy = 0, sizeAfterCopy = 0, hotFieldAlignmentDescriptor = 0;
 		Region region = isNurseryAge(_objectModel->getPreservedAge(forwardedHeader)) ? survivor : tenure;
 		const uintptr_t classificationBits = _objectModel->calculateObjectDetailsForCopy(_env, forwardedHeader, &sizeBeforeCopy, &sizeAfterCopy, &hotFieldAlignmentDescriptor);
-		_condition = (_condition & ~(uintptr_t)classification_mask) | (classificationBits << classification_shift);
+		_condition = (_condition & ~(uintptr_t)classification_mask) | classificationBits;
 
 		/* primitive (leaf) objects are just bubbles in the scan pipeline so are flushed to overflow copyspace unless collocated or needed to pump up worklist volume */
 		CopySpace * const cp = selectCopyspace(&region, sizeAfterCopy);

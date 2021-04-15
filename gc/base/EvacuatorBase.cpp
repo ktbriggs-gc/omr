@@ -68,7 +68,7 @@ MM_EvacuatorBase::Whitespace::whitespace(void *address, uintptr_t length, uintpt
 const char *
 MM_EvacuatorBase::conditionName(ConditionFlag condition)
 {
-	static const char *conditionNames[] = {"bfa","so","stf","ttf","st","bfr","rs","sr","sw","sc","pa","lf","ip"};
+	static const char *conditionNames[] = {"lf","ip","pa","stf","ttf","so","st","bfr","bfa","rs","sr","sw","sc"};
 	Debug_MM_true((condition_count * sizeof(const char *)) == sizeof(conditionNames));
 	return (condition < condition_count) ? conditionNames[condition] : "";
 }
